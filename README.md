@@ -80,7 +80,7 @@ pip install -r requirements.txt
 #### 4. Flash-attention installation:
 ```bash
 pip install ninja
-pip install flash_attn==2.8.1 --no-build-isolation
+pip install flash_attn==2.8.0.post2 --no-build-isolation
 ```
 #### 5. FFmpeg installation
 ```bash
@@ -92,13 +92,13 @@ yum install ffmpeg ffmpeg-devel
 or
 ```bash
 # Conda (no root required) 
-conda install -c conda-forge ffmpeg
+conda install -c conda-forge ffmpeg==7
 ```
 ### 🤗 Model download
 | Model Component | Description | Link |
 | :--- | :--- | :---: |
-| `chinese-wav2vec2-base` | chinese-wav2vec2-base | 🤗 [Huggingface](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base) |
 | `SoulX-FlashTalk-14B` | Our 14b model| 🤗 [Huggingface](https://huggingface.co/Soul-AILab/SoulX-FlashTalk-14B) |
+| `chinese-wav2vec2-base` | chinese-wav2vec2-base | 🤗 [Huggingface](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base) |
 
 ```bash
 # If you are in china mainland, run this first: export HF_ENDPOINT=https://hf-mirror.com
@@ -110,6 +110,7 @@ huggingface-cli download TencentGameMate/chinese-wav2vec2-base --local-dir ./mod
 ```bash
 # infer on single GPU
 bash inference_script_single_gpu.sh
+
 # infer on multy GPUs
 bash inference_script_multi_gpu.sh
 ```
