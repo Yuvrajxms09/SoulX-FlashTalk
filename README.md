@@ -108,10 +108,12 @@ huggingface-cli download TencentGameMate/chinese-wav2vec2-base --local-dir ./mod
 ```
 ### 🚀 Inference
 ```bash
-# infer on single GPU
+# Infer on single GPU
+# Requires more than 64G of VRAM
 bash inference_script_single_gpu.sh
 
-# infer on multy GPUs
+# Infer on multy GPUs
+# Real-time inference speed can only be supported on 8xH800 or higher graphics cards
 bash inference_script_multi_gpu.sh
 ```
 
