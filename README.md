@@ -34,6 +34,11 @@
 - [x] Checkpoint release
 - [ ] Online demo
 
+## 📢 Live Streaming & Video Podcast
+
+<p align="center">
+  <video src="https://private-user-images.githubusercontent.com/176391424/542734488-c2c68ca1-5ac1-431f-9783-7af6e20e243e.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Njk3NjU2NzUsIm5iZiI6MTc2OTc2NTM3NSwicGF0aCI6Ii8xNzYzOTE0MjQvNTQyNzM0NDg4LWMyYzY4Y2ExLTVhYzEtNDMxZi05NzgzLTdhZjZlMjBlMjQzZS5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMTMwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDEzMFQwOTI5MzVaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1hNGZmZTY1OGRlZjRiNTBiM2Y2YjlhM2E3MWZhYmVhZDIxMDI3ZGFmZmY1NmVjZDgzNzVkODQ1YjM1Y2M0NmEzJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.boX3RzfPeOTMhKwt9ZLzsD8sgEJep_OEGDvP7fnqzTA" style="width:100%; max-width:640px; aspect-ratio:16/9; object-fit:cover;" controls loop></video>
+</p>
 
 ## 🎬 Online Demos
 <table>
