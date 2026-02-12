@@ -19,13 +19,13 @@
 
 
 ## 🔥 News
+- **2026.02.12** - We have released the [SoulX-FlashHead](https://github.com/Soul-AILab/SoulX-FlashHead), which is a streaming talking head project that achieves real-time performance on consumer GPUs (e.g., RTX 4090/5090).
 - **2026.01.08** - We have released the [inference code](https://github.com/Soul-AILab/SoulX-FlashTalk), and the [model weights](https://huggingface.co/Soul-AILab/SoulX-FlashTalk-14B).
 - **2025.12.30** - We released **Project page** on [SoulX-FlashTalk](https://soul-ailab.github.io/soulx-flashtalk/).
 - **2025.12.30** - We released **SoulX-FlashTalk Technical Report** on [Arxiv](https://arxiv.org/pdf/2512.23379) and [GitHub repository](./assets/SoulX_FlashTalk.pdf).
 
-
 ## 🤫 Coming soon
-**A 4-GPU version of SoulX-FlashTalk and a new open-source real-time streaming digital human model designed specifically for consumer-grade GPUs like 4090 etc.**
+**A 4-GPU real-time version of SoulX-FlashTalk.**
 
 ## 📑 Todo List
 - [x] Technical report 
