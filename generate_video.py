@@ -87,9 +87,10 @@ def save_video(frames_list, video_path, audio_path, fps):
                 frame = frames[i, :, :, :]
                 writer.append_data(frame)
     
-    # merge video and audio
-    cmd = ['ffmpeg', '-i', temp_video_path, '-i', audio_path, '-c', 'copy', '-shortest', video_path, '-y']
-    subprocess.run(cmd)
+    
+    # Use aac audio codec for better compatibility instead of copy
+    cmd = ['ffmpeg', '-i', temp_video_path, '-i', audio_path, '-c:v', 'copy', '-c:a', 'aac', '-shortest', video_path, '-y']
+    subprocess.run(cmd, check=True)
     os.remove(temp_video_path)
 
 
