@@ -110,7 +110,7 @@ def generate(args):
 
     generated_list = []
     human_speech_array_all, _ = librosa.load(args.audio_path, sr=infer_params['sample_rate'], mono=True)
-
+    total_inference_time = 0.0
 
     if rank == 0:
         logger.info("Data preparation done. Start to generate video...")
@@ -128,8 +128,10 @@ def generate(args):
 
             torch.cuda.synchronize()
             end_time = time.time()
+            chunk_time = end_time - start_time
+            total_inference_time += chunk_time
             if rank == 0:
-                logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
+                logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {chunk_time:.2f}s")
 
             generated_list.append(video.cpu())
 
@@ -157,13 +159,15 @@ def generate(args):
 
             torch.cuda.synchronize()
             end_time = time.time()
+            chunk_time = end_time - start_time
+            total_inference_time += chunk_time
             if rank == 0:
-                logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
+                logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {chunk_time:.2f}s")
 
             generated_list.append(video.cpu())
 
-
     if rank == 0:
+        logger.info(f"Total inference time (excl. load): {total_inference_time:.2f}s")
         if args.save_file is None:
             output_dir = 'sample_results'
             if not os.path.exists(output_dir):
