@@ -116,19 +116,22 @@ def generate(args):
         logger.info("Data preparation done. Start to generate video...")
 
     if args.audio_encode_mode == 'once':
-        # encode audio together
+        torch.cuda.synchronize()
+        start_time = time.time()
         audio_embedding_all = get_audio_embedding(pipeline, human_speech_array_all)
+        torch.cuda.synchronize()
+        audio_encode_time = time.time() - start_time
+        total_inference_time += audio_encode_time
+        if rank == 0:
+            logger.info(f"Audio encode (once): {audio_encode_time:.2f}s")
+
         audio_embedding_chunks_list = [audio_embedding_all[:, i * slice_len: i * slice_len + frame_num].contiguous() for i in range((audio_embedding_all.shape[1]-frame_num) // slice_len)]
         for chunk_idx, audio_embedding_chunk in enumerate(audio_embedding_chunks_list):
             torch.cuda.synchronize()
             start_time = time.time()
-
-            # inference
             video = run_pipeline(pipeline, audio_embedding_chunk)
-
             torch.cuda.synchronize()
-            end_time = time.time()
-            chunk_time = end_time - start_time
+            chunk_time = time.time() - start_time
             total_inference_time += chunk_time
             if rank == 0:
                 logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {chunk_time:.2f}s")
@@ -146,28 +149,23 @@ def generate(args):
         human_speech_array_slices = human_speech_array_all[:(len(human_speech_array_all)//(human_speech_array_slice_len))*human_speech_array_slice_len].reshape(-1, human_speech_array_slice_len)
 
         for chunk_idx, human_speech_array in enumerate(human_speech_array_slices):
-            # streaming encode audio chunks
             audio_dq.extend(human_speech_array.tolist())
             audio_array = np.array(audio_dq)
-            audio_embedding = get_audio_embedding(pipeline, audio_array, audio_start_idx, audio_end_idx)
 
             torch.cuda.synchronize()
             start_time = time.time()
-
-            # inference
+            audio_embedding = get_audio_embedding(pipeline, audio_array, audio_start_idx, audio_end_idx)
             video = run_pipeline(pipeline, audio_embedding)
-
             torch.cuda.synchronize()
-            end_time = time.time()
-            chunk_time = end_time - start_time
+            chunk_time = time.time() - start_time
             total_inference_time += chunk_time
             if rank == 0:
-                logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {chunk_time:.2f}s")
+                logger.info(f"Generate video chunk-{chunk_idx} done (audio encode + inference): {chunk_time:.2f}s")
 
             generated_list.append(video.cpu())
 
     if rank == 0:
-        logger.info(f"Total inference time (excl. load): {total_inference_time:.2f}s")
+        logger.info(f"Total inference time (excl. load, incl. audio encode): {total_inference_time:.2f}s")
         if args.save_file is None:
             output_dir = 'sample_results'
             if not os.path.exists(output_dir):
@@ -177,8 +175,12 @@ def generate(args):
             filepath = os.path.join(output_dir, filename)
             args.save_file = filepath
 
+        start_save = time.time()
         save_video(generated_list, args.save_file, args.audio_path, fps=tgt_fps)
-        logger.info(f"Saving generated video to {args.save_file}.mp4")  
+        save_time = time.time() - start_save
+        logger.info(f"Save time (encode + ffmpeg): {save_time:.2f}s")
+        logger.info(f"Total (excl. load, incl. audio encode + save): {total_inference_time + save_time:.2f}s")
+        logger.info(f"Saving generated video to {args.save_file}")
         logger.info("Finished.")
 
     if world_size > 1:
