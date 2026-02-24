@@ -27,23 +27,6 @@ if os.environ.get("SAMPLE_RATE"):
 
 target_size = (infer_params["height"], infer_params["width"])
 
-def apply_infer_param_overrides(
-    sample_steps=None, height=None, width=None, tgt_fps=None, sample_rate=None
-):
-    """Apply CLI/script overrides to infer_params. Call before get_pipeline/get_base_data."""
-    global target_size
-    if sample_steps is not None:
-        infer_params["sample_steps"] = sample_steps
-    if height is not None:
-        infer_params["height"] = height
-    if width is not None:
-        infer_params["width"] = width
-    if tgt_fps is not None:
-        infer_params["tgt_fps"] = tgt_fps
-    if sample_rate is not None:
-        infer_params["sample_rate"] = sample_rate
-    target_size = (infer_params["height"], infer_params["width"])
-
 def get_pipeline(world_size, ckpt_dir, wav2vec_dir, cpu_offload=False):
     cfg = multitalk_14B
 

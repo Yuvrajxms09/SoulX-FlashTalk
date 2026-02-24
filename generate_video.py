@@ -13,14 +13,7 @@ from loguru import logger
 from collections import deque
 from datetime import datetime
 
-from flash_talk.inference import (
-    get_pipeline,
-    get_base_data,
-    get_audio_embedding,
-    run_pipeline,
-    infer_params,
-    apply_infer_param_overrides,
-)
+from flash_talk.inference import get_pipeline, get_base_data, get_audio_embedding, run_pipeline, infer_params
 
 def _validate_args(args):
     # Basic check
@@ -78,10 +71,6 @@ def _parse_args():
         "--cpu_offload",
         action="store_true",
         help="Enable CPU offload for low VRAM usage")
-    parser.add_argument("--sample_steps", type=int, default=None, help="Sampling steps (default: from config)")
-    parser.add_argument("--height", type=int, default=None, help="Output height (default: from config)")
-    parser.add_argument("--width", type=int, default=None, help="Output width (default: from config)")
-    parser.add_argument("--tgt_fps", type=int, default=None, help="Target FPS (default: from config)")
     args = parser.parse_args()
 
     _validate_args(args)
@@ -216,12 +205,4 @@ def generate(args):
 
 if __name__ == "__main__":
     args = _parse_args()
-    overrides = {k: v for k, v in [
-        ("sample_steps", args.sample_steps),
-        ("height", args.height),
-        ("width", args.width),
-        ("tgt_fps", args.tgt_fps),
-    ] if v is not None}
-    if overrides:
-        apply_infer_param_overrides(**overrides)
     generate(args)
