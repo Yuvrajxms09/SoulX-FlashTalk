@@ -1,4 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+import os
 import yaml
 import torch
 from loguru import logger
@@ -12,8 +13,36 @@ from flash_talk.infinite_talk.utils.multitalk_utils import loudness_norm
 with open("flash_talk/configs/infer_params.yaml", "r") as f:
     infer_params = yaml.safe_load(f)
 
-# TODO: support more resolution
-target_size = (infer_params['height'], infer_params['width'])
+# Env overrides for prod/Colab (optional)
+if os.environ.get("SAMPLE_STEPS"):
+    infer_params["sample_steps"] = int(os.environ["SAMPLE_STEPS"])
+if os.environ.get("HEIGHT"):
+    infer_params["height"] = int(os.environ["HEIGHT"])
+if os.environ.get("WIDTH"):
+    infer_params["width"] = int(os.environ["WIDTH"])
+if os.environ.get("TGT_FPS"):
+    infer_params["tgt_fps"] = int(os.environ["TGT_FPS"])
+if os.environ.get("SAMPLE_RATE"):
+    infer_params["sample_rate"] = int(os.environ["SAMPLE_RATE"])
+
+target_size = (infer_params["height"], infer_params["width"])
+
+def apply_infer_param_overrides(
+    sample_steps=None, height=None, width=None, tgt_fps=None, sample_rate=None
+):
+    """Apply CLI/script overrides to infer_params. Call before get_pipeline/get_base_data."""
+    global target_size
+    if sample_steps is not None:
+        infer_params["sample_steps"] = sample_steps
+    if height is not None:
+        infer_params["height"] = height
+    if width is not None:
+        infer_params["width"] = width
+    if tgt_fps is not None:
+        infer_params["tgt_fps"] = tgt_fps
+    if sample_rate is not None:
+        infer_params["sample_rate"] = sample_rate
+    target_size = (infer_params["height"], infer_params["width"])
 
 def get_pipeline(world_size, ckpt_dir, wav2vec_dir, cpu_offload=False):
     cfg = multitalk_14B
