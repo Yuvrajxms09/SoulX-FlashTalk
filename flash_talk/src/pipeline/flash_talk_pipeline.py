@@ -212,7 +212,11 @@ class FlashTalkPipeline:
         y = torch.concat([msk, common_y], dim=1)
 
 
-        max_seq_len = ((frame_num - 1) // self.vae_stride[0] + 1) * self.lat_h * self.lat_w // (self.patch_size[1] * self.patch_size[2])
+        # Must match model's patchify: N_t * N_h * N_w with N_h = lat_h // patch_size[1], N_w = lat_w // patch_size[2]
+        n_t = (frame_num - 1) // self.vae_stride[0] + 1
+        n_h = self.lat_h // self.patch_size[1]
+        n_w = self.lat_w // self.patch_size[2]
+        max_seq_len = n_t * n_h * n_w
         max_seq_len = int(math.ceil(max_seq_len / self.sp_size)) * self.sp_size
 
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
