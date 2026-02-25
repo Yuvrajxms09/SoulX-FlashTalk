@@ -170,6 +170,9 @@ class FlashTalkPipeline:
         self.motion_frames_num = motion_frames_num
 
         self.target_h, self.target_w = target_size
+        # Model unpatchify needs lat_h, lat_w even (output is N_h*2 x N_w*2). Round to mult of 16 so lat is even.
+        self.target_h = (self.target_h // 16) * 16
+        self.target_w = (self.target_w // 16) * 16
         self.lat_h, self.lat_w = self.target_h // self.vae_stride[1], self.target_w // self.vae_stride[2]
 
         if isinstance(cond_image, str):
