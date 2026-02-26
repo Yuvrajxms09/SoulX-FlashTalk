@@ -77,12 +77,15 @@ class FlashTalkPipeline:
         self.param_dtype = config.param_dtype
         self.cpu_offload = cpu_offload and not self.use_usp
 
+        t5_quant = getattr(config, "t5_quant", None)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
             device=self.device,
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
+            quant=t5_quant,
+            quant_dir=checkpoint_dir if t5_quant else None,
         )
 
         self.vae_stride = config.vae_stride

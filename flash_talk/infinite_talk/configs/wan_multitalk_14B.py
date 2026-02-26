@@ -17,7 +17,8 @@ multitalk_14B.num_train_timesteps = 1000
 multitalk_14B.sample_fps = 16
 multitalk_14B.sample_neg_prompt = 'bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards'
 
-multitalk_14B.t5_checkpoint = 'models_t5_umt5-xxl-enc-fp8.pth'
+multitalk_14B.t5_checkpoint = 'models_t5_umt5-xxl-enc-bf16.pth'
+multitalk_14B.t5_quant = 'fp8'
 multitalk_14B.t5_tokenizer = 'google/umt5-xxl'
 
 # clip
