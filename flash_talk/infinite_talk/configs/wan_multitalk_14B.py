@@ -24,7 +24,7 @@ multitalk_14B.t5_tokenizer = 'google/umt5-xxl'
 # clip
 multitalk_14B.clip_model = 'clip_xlm_roberta_vit_h_14'
 multitalk_14B.clip_dtype = torch.float16
-multitalk_14B.clip_checkpoint = 'models_clip_open-clip-xlm-roberta-large-vit-huge-14-fp8.pth'
+multitalk_14B.clip_checkpoint = 'models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth'
 multitalk_14B.clip_tokenizer = 'xlm-roberta-large'
 
 # vae
