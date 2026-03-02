@@ -190,12 +190,10 @@ class FlashTalkPipeline:
         if self.color_correction_strength > 0.0:
             self.original_color_reference = cond_image_tensor.clone()
 
-        if self.cpu_offload:
-            self.clip.model.to(self.device)
+        self.clip.model.to(self.device)
         clip_context = self.clip.visual(cond_image_tensor[:, :, -1:, :, :]).to(self.param_dtype)
-        if self.cpu_offload:
-            self.clip.model.cpu()
-            torch.cuda.empty_cache()
+        self.clip.model.cpu()
+        torch.cuda.empty_cache()
 
         video_frames = torch.zeros(1, cond_image_tensor.shape[1], frame_num-cond_image_tensor.shape[2], self.target_h, self.target_w).to(dtype=self.param_dtype, device=self.device)
 
@@ -216,7 +214,8 @@ class FlashTalkPipeline:
         msk = msk.transpose(1, 2).to(self.param_dtype)
 
         y = torch.concat([msk, common_y], dim=1)
-
+        del padding_frames_pixels_values, video_frames, common_y, msk
+        torch.cuda.empty_cache()
 
         # Must match model's patchify: N_t * N_h * N_w with N_h = lat_h // patch_size[1], N_w = lat_w // patch_size[2]
         n_t = (frame_num - 1) // self.vae_stride[0] + 1
