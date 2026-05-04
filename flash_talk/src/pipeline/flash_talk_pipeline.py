@@ -19,8 +19,8 @@ from flash_talk.infinite_talk.audio_analysis.wav2vec2 import Wav2Vec2Model
 from flash_talk.infinite_talk.utils.multitalk_utils import match_and_blend_colors_torch, resize_and_centercrop
 
 # compile models to speedup inference (disable to avoid first-run compile spike; per-step may be slower)
-COMPILE_MODEL = False
-COMPILE_VAE = False
+COMPILE_MODEL = True
+COMPILE_VAE = True
 # use parallel vae to speedup decode/encode
 USE_PARALLEL_VAE = True
 
