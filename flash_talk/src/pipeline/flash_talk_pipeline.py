@@ -54,6 +54,7 @@ class FlashTalkPipeline:
         device="cuda",
         use_usp=False,
         cpu_offload=False,
+        helper_cpu_offload=True,
         num_timesteps=1000,
         use_timestep_transform=True,
     ):
@@ -76,11 +77,13 @@ class FlashTalkPipeline:
         self.use_usp = use_usp and dist.is_initialized()
         self.param_dtype = config.param_dtype
         self.cpu_offload = cpu_offload and not self.use_usp
+        self.helper_cpu_offload = helper_cpu_offload
+        helper_device = "cpu" if self.helper_cpu_offload else self.device
 
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
-            device=self.device,
+            device=helper_device,
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
         )
@@ -91,13 +94,13 @@ class FlashTalkPipeline:
         self.vae = WanVAE(
             vae_path=os.path.join(checkpoint_dir, config.vae_checkpoint),
             dtype=self.param_dtype,
-            device=self.device,
+            device=helper_device,
             parallel=(USE_PARALLEL_VAE and self.use_usp),
         )
 
         self.clip = CLIPModel(
             dtype=config.clip_dtype,
-            device=self.device,
+            device=helper_device,
             checkpoint_path=os.path.join(checkpoint_dir, config.clip_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.clip_tokenizer))
 
@@ -142,7 +145,9 @@ class FlashTalkPipeline:
             self.vae.encode = torch.compile(self.vae.encode)
             self.vae.decode = torch.compile(self.vae.decode)
 
-        self.audio_encoder = Wav2Vec2Model.from_pretrained(wav2vec_dir, local_files_only=True).to(self.device)
+        self.audio_encoder = Wav2Vec2Model.from_pretrained(
+            wav2vec_dir, local_files_only=True
+        ).to(helper_device)
         self.audio_encoder.feature_extractor._freeze_parameters()
         self.wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_dir, local_files_only=True)
 
@@ -159,10 +164,10 @@ class FlashTalkPipeline:
                         color_correction_strength=0.0,
                         ):
 
-        if self.cpu_offload:
+        if self.helper_cpu_offload:
             self.text_encoder.model.to(self.device)
         context = self.text_encoder([input_prompt], self.device)[0]
-        if self.cpu_offload:
+        if self.helper_cpu_offload:
             self.text_encoder.model.cpu()
             torch.cuda.empty_cache()
 
@@ -184,10 +189,10 @@ class FlashTalkPipeline:
         if self.color_correction_strength > 0.0:
             self.original_color_reference = cond_image_tensor.clone()
 
-        if self.cpu_offload:
+        if self.helper_cpu_offload:
             self.clip.model.to(self.device)
         clip_context = self.clip.visual(cond_image_tensor[:, :, -1:, :, :]).to(self.param_dtype)
-        if self.cpu_offload:
+        if self.helper_cpu_offload:
             self.clip.model.cpu()
             torch.cuda.empty_cache()
 
@@ -195,8 +200,10 @@ class FlashTalkPipeline:
 
         padding_frames_pixels_values = torch.concat([cond_image_tensor, video_frames], dim=2)
 
-        if self.cpu_offload:
+        if self.helper_cpu_offload:
             self.vae.model.to(self.device)
+            self.vae.scale[0] = self.vae.scale[0].to(self.device)
+            self.vae.scale[1] = self.vae.scale[1].to(self.device)
         y = self.vae.encode(padding_frames_pixels_values)
         common_y = y.unsqueeze(0).to(self.param_dtype)
 
@@ -241,8 +248,10 @@ class FlashTalkPipeline:
 
         self.latent_motion_frames = self.vae.encode(self.cond_image_tensor)
 
-        if self.cpu_offload:
+        if self.helper_cpu_offload:
             self.vae.model.cpu()
+            self.vae.scale[0] = self.vae.scale[0].cpu()
+            self.vae.scale[1] = self.vae.scale[1].cpu()
             torch.cuda.empty_cache()
 
         return
@@ -260,8 +269,13 @@ class FlashTalkPipeline:
         audio_feature = audio_feature.unsqueeze(0)
 
         # audio encoder
+        if self.helper_cpu_offload:
+            self.audio_encoder.to(self.device)
         with torch.no_grad():
             embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
+        if self.helper_cpu_offload:
+            self.audio_encoder.cpu()
+            torch.cuda.empty_cache()
 
         if len(embeddings) == 0:
             logger.error("Fail to extract audio embedding")
@@ -323,7 +337,11 @@ class FlashTalkPipeline:
             if self.cpu_offload:
                 self.model.cpu()
                 torch.cuda.empty_cache()
+
+            if self.helper_cpu_offload:
                 self.vae.model.to(self.device)
+                self.vae.scale[0] = self.vae.scale[0].to(self.device)
+                self.vae.scale[1] = self.vae.scale[1].to(self.device)
 
             torch.cuda.synchronize()
             start_decode_time = time.time()
@@ -352,8 +370,10 @@ class FlashTalkPipeline:
         if self.rank == 0:
             print(f'[generate] encode motion frames: {end_encode_time - start_encode_time}s')
 
-        if self.cpu_offload:
+        if self.helper_cpu_offload:
             self.vae.model.cpu()
+            self.vae.scale[0] = self.vae.scale[0].cpu()
+            self.vae.scale[1] = self.vae.scale[1].cpu()
             torch.cuda.empty_cache()
 
         gen_video_samples = videos[:, :, self.motion_frames_num:]

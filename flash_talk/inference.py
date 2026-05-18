@@ -67,7 +67,7 @@ class NotebookVideo:
                 pass
 
 
-def get_pipeline(world_size, ckpt_dir, wav2vec_dir, cpu_offload=False):
+def get_pipeline(world_size, ckpt_dir, wav2vec_dir, cpu_offload=False, helper_cpu_offload=True):
     cfg = multitalk_14B
 
     ulysses_degree, ring_degree = get_parallel_degree(world_size, cfg.num_heads)
@@ -83,6 +83,7 @@ def get_pipeline(world_size, ckpt_dir, wav2vec_dir, cpu_offload=False):
         device=device,
         use_usp=(world_size > 1),
         cpu_offload=cpu_offload,
+        helper_cpu_offload=helper_cpu_offload,
     )
 
     return pipeline
@@ -203,6 +204,7 @@ class NotebookFlashTalkPipeline:
         *,
         world_size: int = 1,
         cpu_offload: bool = False,
+        helper_cpu_offload: bool = True,
         base_seed: int = 9999,
     ) -> None:
         self.pipeline = get_pipeline(
@@ -210,6 +212,7 @@ class NotebookFlashTalkPipeline:
             ckpt_dir=ckpt_dir,
             wav2vec_dir=wav2vec_dir,
             cpu_offload=cpu_offload,
+            helper_cpu_offload=helper_cpu_offload,
         )
         self.base_seed = base_seed
 
