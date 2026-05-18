@@ -640,7 +640,7 @@ class FlashTalkPipeline:
 
             # split audio embedding into chunks: 33, 28, 28, 28, ...
             audio_embedding_len = audio_embedding_all.shape[1]
-            chunk_count = (audio_embedding_len - frame_num + slice_len) // slice_len
+            chunk_count = max(1, (audio_embedding_len - frame_num + slice_len) // slice_len)
             audio_embedding_chunks_list = [
                 audio_embedding_all[
                     :, i * slice_len : i * slice_len + frame_num
