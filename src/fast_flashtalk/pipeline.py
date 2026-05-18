@@ -35,8 +35,8 @@ from .vram_management import (
 from .configs import multitalk_14B
 
 # compile models to speedup inference
-COMPILE_MODEL = True
-COMPILE_VAE = True
+COMPILE_MODEL = False
+COMPILE_VAE = False
 # use parallel vae to speedup decode/encode
 USE_PARALLEL_VAE = True
 
@@ -101,10 +101,6 @@ class FlashTalkPipeline:
         self.device = device
         config = multitalk_14B
         self.config = config
-        if weight_bits not in (4, 8):
-            raise ValueError(
-                f"Unsupported weight_bits={weight_bits}; expected 8 or 4."
-            )
 
         with open(Path(__file__).parent / "configs" / "infer_params.yaml", "r") as f:
             self.infer_params = yaml.safe_load(f)
@@ -157,6 +153,10 @@ class FlashTalkPipeline:
         )
         self.model.eval().requires_grad_(False)
         if self.quantize_weights:
+            if weight_bits not in (4, 8):
+                raise ValueError(
+                    f"Unsupported weight_bits={weight_bits}; expected 8 or 4."
+                )
             if self.weight_bits == 8:
                 quantize_model_a8w8_int8_gemlite(self.model, device="cuda")
             elif self.weight_bits == 4:
