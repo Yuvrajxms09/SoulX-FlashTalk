@@ -1,7 +1,10 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import math
 import os
+import shutil
+import subprocess
 import time
+import tempfile
 import yaml
 from typing import Literal
 from collections import deque
@@ -14,7 +17,6 @@ from einops import rearrange
 from transformers import Wav2Vec2FeatureExtractor
 from loguru import logger
 
-from osc_data.video import Video
 from osc_data.image import Image
 from osc_data.audio import Audio
 
@@ -65,6 +67,184 @@ def timestep_transform(
     new_t = shift * t / (1 + (shift - 1) * t)
     new_t = new_t * num_timesteps
     return new_t
+
+
+class GeneratedVideoArtifact:
+    """Lightweight file-backed generated video handle."""
+
+    def __init__(
+        self,
+        uri: str,
+        prompt: str,
+        fps: int,
+        frame_count: int,
+        width: int,
+        height: int,
+        has_audio: bool = False,
+    ):
+        self.uri = uri
+        self.prompt = prompt
+        self.fps = fps
+        self.frame_count = frame_count
+        self.width = width
+        self.height = height
+        self.has_audio = has_audio
+
+    def save(self, path: str, format: str | None = None, codec: str | None = None):
+        del format, codec
+        if os.path.abspath(path) == os.path.abspath(self.uri):
+            return self
+        parent_dir = os.path.dirname(os.fspath(path))
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        shutil.copy2(self.uri, path)
+        return GeneratedVideoArtifact(
+            path,
+            self.prompt,
+            self.fps,
+            self.frame_count,
+            width=self.width,
+            height=self.height,
+            has_audio=self.has_audio,
+        )
+
+    def _resolve_audio_uri(self, audio) -> str:
+        audio_uri = getattr(audio, "uri", None)
+        if audio_uri:
+            return audio_uri
+        audio_path = getattr(audio, "path", None)
+        if audio_path:
+            return audio_path
+        if isinstance(audio, (str, os.PathLike)):
+            return os.fspath(audio)
+        raise ValueError("Audio object must expose a uri or path for ffmpeg muxing.")
+
+    def merge_audio(self, audio, output_path: str, audio_mode: str = "loop"):
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("ffmpeg is required for merge_audio but was not found on PATH.")
+
+        parent_dir = os.path.dirname(os.fspath(output_path))
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
+        cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", self.uri]
+        if audio_mode == "loop":
+            cmd.extend(["-stream_loop", "-1", "-i", self._resolve_audio_uri(audio)])
+        elif audio_mode == "silence":
+            sample_rate = int(getattr(audio, "sampling_rate", getattr(audio, "sample_rate", 16000)))
+            duration = max(self.frame_count / max(self.fps, 1), 0.0)
+            cmd.extend(
+                [
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"anullsrc=channel_layout=mono:sample_rate={sample_rate}",
+                    "-t",
+                    str(duration),
+                ]
+            )
+        else:
+            raise ValueError("audio_mode must be 'loop' or 'silence'")
+
+        cmd.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-shortest",
+                output_path,
+            ]
+        )
+        subprocess.run(cmd, check=True)
+        return GeneratedVideoArtifact(
+            output_path,
+            self.prompt,
+            self.fps,
+            self.frame_count,
+            width=self.width,
+            height=self.height,
+            has_audio=True,
+        )
+
+
+class _FFmpegRawVideoWriter:
+    def __init__(self, output_path: str, width: int, height: int, fps: int):
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("ffmpeg is required for streaming output but was not found on PATH.")
+
+        self.output_path = output_path
+        self._closed = False
+        self._proc = subprocess.Popen(
+            [
+                ffmpeg,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-s",
+                f"{width}x{height}",
+                "-r",
+                str(fps),
+                "-i",
+                "pipe:0",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                output_path,
+            ],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def write(self, frame_batch: np.ndarray) -> None:
+        if self._closed:
+            raise RuntimeError("Cannot write to a closed ffmpeg stream.")
+        if frame_batch.dtype != np.uint8 or not frame_batch.flags.c_contiguous:
+            frame_batch = np.ascontiguousarray(frame_batch, dtype=np.uint8)
+        if self._proc.stdin is None:
+            raise RuntimeError("ffmpeg stdin is not available.")
+        self._proc.stdin.write(memoryview(frame_batch))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        stderr_text = ""
+        if self._proc.stdin is not None:
+            self._proc.stdin.close()
+        if self._proc.stderr is not None:
+            stderr_text = self._proc.stderr.read().decode("utf-8", errors="replace")
+            self._proc.stderr.close()
+        return_code = self._proc.wait()
+        if return_code != 0:
+            raise RuntimeError(
+                f"ffmpeg raw video writer failed with exit code {return_code}: {stderr_text.strip()}"
+            )
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class FlashTalkPipeline:
@@ -571,7 +751,7 @@ class FlashTalkPipeline:
         image: Image,
         audio_encode_mode: Literal["stream", "once"] = "once",
         target_size: tuple[int, int] | None = None,
-    ) -> Video:
+    ) -> GeneratedVideoArtifact:
         """
         Generate video from the audio and image prompt.
 
@@ -594,16 +774,8 @@ class FlashTalkPipeline:
             force_9_16: Whether to force the video to be 9:16.
 
         Returns:
-            List[torch.Tensor]: A list of video frame tensors, where each tensor has:
-                - Shape: (num_frames, height, width, 3)
-                - Dtype: torch.float32
-                - Value range: [0, 255]
-                - Device: CPU
-                - Channel order: RGB (channels last)
-
-                For example, with 768x448 resolution, each tensor shape is:
-                - First chunk: (33, 768, 448, 3)
-                - Subsequent chunks: (28, 768, 448, 3) or (23, 768, 448, 3) for last chunk
+            A file-backed video artifact stored on disk. The returned handle supports
+            `.save(...)` and `.merge_audio(...)`.
         """
         generate_start_time = time.perf_counter()
         logger.info("Start to generate video...")
@@ -630,7 +802,33 @@ class FlashTalkPipeline:
             f"Data preparation time: {data_prepare_time - generate_start_time:.2f}s"
         )
 
-        generated_list = []
+        total_output_frames = None
+        streaming_output_path = None
+        streaming_video_writer = None
+        streaming_written_frames = 0
+
+        def commit_chunk_output(chunk_video: torch.Tensor) -> None:
+            nonlocal streaming_video_writer, streaming_output_path, streaming_written_frames
+            if streaming_video_writer is None:
+                if total_output_frames is None:
+                    raise RuntimeError("total_output_frames must be set before streaming output.")
+                os.makedirs("sample_results", exist_ok=True)
+                fd, streaming_output_path = tempfile.mkstemp(
+                    prefix="soulx_flashtalk_",
+                    suffix=".mp4",
+                    dir="sample_results",
+                )
+                os.close(fd)
+                streaming_video_writer = _FFmpegRawVideoWriter(
+                    output_path=streaming_output_path,
+                    width=int(chunk_video.shape[2]),
+                    height=int(chunk_video.shape[1]),
+                    fps=int(tgt_fps),
+                )
+            chunk_array = chunk_video.to(torch.uint8).cpu().numpy()
+            streaming_written_frames += int(chunk_array.shape[0])
+            streaming_video_writer.write(chunk_array)
+
         if audio_encode_mode == "once":
             # pad audio with silence to avoid truncating the last chunk
             remainder = (
@@ -651,6 +849,7 @@ class FlashTalkPipeline:
             # split audio embedding into chunks: 33, 28, 28, 28, ...
             audio_embedding_len = audio_embedding_all.shape[1]
             chunk_count = max(1, (audio_embedding_len - frame_num + slice_len) // slice_len)
+            total_output_frames = frame_num + max(chunk_count - 1, 0) * slice_len
             audio_embedding_chunks_list = [
                 audio_embedding_all[
                     :, i * slice_len : i * slice_len + frame_num
@@ -676,7 +875,7 @@ class FlashTalkPipeline:
                     f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s"
                 )
 
-                generated_list.append(video.cpu())
+                commit_chunk_output(video)
                 torch.cuda.empty_cache()
 
         elif audio_encode_mode == "stream":
@@ -703,6 +902,7 @@ class FlashTalkPipeline:
             human_speech_array_slices = human_speech_array_all.reshape(
                 -1, human_speech_array_slice_len
             )
+            total_output_frames = frame_num + max(len(human_speech_array_slices) - 1, 0) * slice_len
 
             for chunk_idx, human_speech_array in enumerate(human_speech_array_slices):
                 # streaming encode audio chunks
@@ -725,14 +925,28 @@ class FlashTalkPipeline:
                     f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s"
                 )
 
-                generated_list.append(video.cpu())
+                commit_chunk_output(video)
                 torch.cuda.empty_cache()
 
         # offload dit model
         if self.vram_management:
             self.offload_dit_model()
-        video_array = torch.cat(generated_list, dim=0).numpy().astype(np.uint8)
-        video = Video(data=video_array, prompt=input_prompt, fps=tgt_fps)
+
+        if streaming_video_writer is None or streaming_output_path is None:
+            raise RuntimeError("Streaming output writer was not initialized.")
+        if streaming_written_frames != total_output_frames:
+            raise RuntimeError(
+                f"Streaming output frame count mismatch: wrote {streaming_written_frames} frame(s), expected {total_output_frames} frame(s)."
+            )
+        streaming_video_writer.close()
+        video = GeneratedVideoArtifact(
+            uri=streaming_output_path,
+            prompt=input_prompt,
+            fps=tgt_fps,
+            frame_count=int(total_output_frames),
+            width=int(self.target_w),
+            height=int(self.target_h),
+        )
         generate_end_time = time.perf_counter()
         logger.info(
             f"FlashTalk Pipeline Generate time: {generate_end_time - generate_start_time:.2f}s"
