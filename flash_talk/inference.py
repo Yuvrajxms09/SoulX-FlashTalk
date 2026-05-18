@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,52 +17,13 @@ from flash_talk.infinite_talk.configs import multitalk_14B
 from flash_talk.infinite_talk.utils.multitalk_utils import loudness_norm
 from flash_talk.src.distributed.usp_device import get_device, get_parallel_degree
 from flash_talk.src.pipeline.flash_talk_pipeline import FlashTalkPipeline as RawFlashTalkPipeline
+from osc_data.video import Video
 
 with open(Path(__file__).parent / "configs" / "infer_params.yaml", "r") as f:
     infer_params = yaml.safe_load(f)
 
 # TODO: support more resolution
 target_size = (infer_params["height"], infer_params["width"])
-
-
-@dataclass
-class NotebookVideo:
-    frames: torch.Tensor
-    fps: int
-
-    def save(self, output_path: str) -> None:
-        _write_video_frames(self.frames, output_path, self.fps)
-
-    def merge_audio(self, audio: Any, output_path: str) -> None:
-        audio_path = _resolve_audio_path(audio)
-        if audio_path is None:
-            raise ValueError("merge_audio requires an audio file path or an object with uri/path")
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            temp_video_path = tmp.name
-
-        try:
-            _write_video_frames(self.frames, temp_video_path, self.fps)
-            cmd = [
-                "ffmpeg",
-                "-i",
-                temp_video_path,
-                "-i",
-                audio_path,
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-shortest",
-                output_path,
-                "-y",
-            ]
-            subprocess.run(cmd, check=True)
-        finally:
-            try:
-                os.remove(temp_video_path)
-            except OSError:
-                pass
 
 
 def get_pipeline(world_size, ckpt_dir, wav2vec_dir, cpu_offload=False, helper_cpu_offload=True):
@@ -176,26 +135,6 @@ def _load_audio_array(audio: Any, sample_rate: int) -> np.ndarray:
     return np.frombuffer(proc.stdout, dtype=np.float32)
 
 
-def _write_video_frames(frames: torch.Tensor, output_path: str, fps: int) -> None:
-    import imageio
-
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    with imageio.get_writer(
-        output_path,
-        format="mp4",
-        mode="I",
-        fps=fps,
-        codec="h264",
-        ffmpeg_params=["-bf", "0"],
-    ) as writer:
-        video = frames.detach().cpu().numpy().astype(np.uint8)
-        for idx in range(video.shape[0]):
-            writer.append_data(video[idx])
-
-
 class NotebookFlashTalkPipeline:
     def __init__(
         self,
@@ -233,7 +172,7 @@ class NotebookFlashTalkPipeline:
         seed: int | None = None,
         shift: int | None = None,
         color_correction_strength: float | None = None,
-    ) -> NotebookVideo:
+    ) -> Video:
         sample_rate = infer_params["sample_rate"]
         tgt_fps = infer_params["tgt_fps"]
         cached_audio_duration = infer_params["cached_audio_duration"]
@@ -330,7 +269,8 @@ class NotebookFlashTalkPipeline:
         frames = (
             torch.cat(generated_list, dim=0) if len(generated_list) > 1 else generated_list[0]
         )
-        return NotebookVideo(frames=frames, fps=tgt_fps)
+        video_array = frames.numpy().astype(np.uint8)
+        return Video(data=video_array, prompt=input_prompt, fps=tgt_fps)
 
 
 FlashTalkPipeline = NotebookFlashTalkPipeline

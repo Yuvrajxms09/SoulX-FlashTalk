@@ -5,15 +5,13 @@ import numpy as np
 import time
 import torch
 import torch.distributed as dist
-import subprocess
-import imageio
 import librosa
-import numpy as np
 from loguru import logger
 from collections import deque
 from datetime import datetime
 
 from flash_talk.inference import get_pipeline, get_base_data, get_audio_embedding, run_pipeline, infer_params
+from osc_data.video import Video
 
 def _validate_args(args):
     # Basic check
@@ -76,22 +74,6 @@ def _parse_args():
     _validate_args(args)
 
     return args
-
-def save_video(frames_list, video_path, audio_path, fps):
-    temp_video_path = video_path.replace('res_', '')
-    with imageio.get_writer(temp_video_path, format='mp4', mode='I',
-                            fps=fps , codec='h264', ffmpeg_params=['-bf', '0']) as writer:
-        for frames in frames_list:
-            frames = frames.numpy().astype(np.uint8)
-            for i in range(frames.shape[0]):
-                frame = frames[i, :, :, :]
-                writer.append_data(frame)
-    
-    
-    # Use aac audio codec for better compatibility instead of copy
-    cmd = ['ffmpeg', '-i', temp_video_path, '-i', audio_path, '-c:v', 'copy', '-c:a', 'aac', '-shortest', video_path, '-y']
-    subprocess.run(cmd, check=True)
-    os.remove(temp_video_path)
 
 
 def generate(args):
@@ -173,7 +155,9 @@ def generate(args):
             filepath = os.path.join(output_dir, filename)
             args.save_file = filepath
 
-        save_video(generated_list, args.save_file, args.audio_path, fps=tgt_fps)
+        frames = torch.cat(generated_list, dim=0) if len(generated_list) > 1 else generated_list[0]
+        video = Video(data=frames.numpy().astype(np.uint8), prompt=args.input_prompt, fps=tgt_fps)
+        video.merge_audio(args.audio_path, output_path=args.save_file)
         logger.info(f"Saving generated video to {args.save_file}.mp4")  
         logger.info("Finished.")
 
