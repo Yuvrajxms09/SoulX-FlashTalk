@@ -7,7 +7,7 @@ import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
-from .attention import flash_attention
+from .attention import attention, flash_attention
 from flash_talk.src.rope_kernel import fast_rope_apply
 
 __all__ = ['WanModel']
@@ -216,7 +216,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
         k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
         v_img = self.v_img(context_img).view(b, -1, n, d)
-        img_x = flash_attention(q, k_img, v_img, k_lens=None)
+        img_x = attention(q, k_img, v_img)
         # compute attention
         x = flash_attention(q, k, v, k_lens=context_lens)
 
