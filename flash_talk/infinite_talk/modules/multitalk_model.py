@@ -11,7 +11,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 
 from .multitalk_attention import SingleStreamMutiAttention
 from ..utils.multitalk_utils import get_attn_map_with_target
-from flash_talk.src.rope_kernel import apply_rotary_complex
+from flash_talk.src.rope_kernel import fast_rope_apply
 from flash_talk.wan.modules.attention import flash_attention
 
 __all__ = ['WanModel']
@@ -57,7 +57,7 @@ def rope_apply(x, grid_sizes, freqs):
             freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
         ],
                             dim=-1).reshape(seq_len, 1, -1)
-        x_i = apply_rotary_complex(x[i, :seq_len], freqs_i)
+        x_i = fast_rope_apply(x[i, :seq_len].unsqueeze(0), freqs_i).squeeze(0)
         x_i = torch.cat([x_i, x[i, seq_len:]])
 
         output.append(x_i)

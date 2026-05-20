@@ -12,7 +12,7 @@ from xfuser.core.long_ctx_attention import xFuserLongContextAttention
 import xformers.ops
 
 from ..modules.multitalk_model import sinusoidal_embedding_1d
-from flash_talk.src.rope_kernel import apply_rotary_complex
+from flash_talk.src.rope_kernel import fast_rope_apply
 from ..utils.multitalk_utils import get_attn_map_with_target, split_token_counts_and_frame_ids, normalize_and_scale
 from ..modules.multitalk_attention import SingleStreamMutiAttention
 
@@ -60,7 +60,7 @@ def rope_apply(x, grid_sizes, freqs):
         s_per_rank = s
         freqs_i_rank = freqs_i[(sp_rank * s_per_rank):((sp_rank + 1) *
                                                        s_per_rank), :, :]
-        x_i = apply_rotary_complex(x[i, :s], freqs_i_rank)
+        x_i = fast_rope_apply(x[i, :s].unsqueeze(0), freqs_i_rank).squeeze(0)
         x_i = torch.cat([x_i, x[i, s:]])
 
         # append to collection

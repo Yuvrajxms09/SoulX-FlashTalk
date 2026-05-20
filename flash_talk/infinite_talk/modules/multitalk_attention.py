@@ -12,7 +12,8 @@ try:
 except ImportError:
     xformers = None
 
-from ..utils.multitalk_utils import RotaryPositionalEmbedding1D, normalize_and_scale, split_token_counts_and_frame_ids
+from flash_talk.src.rope_kernel import RotaryPositionalEmbedding1D
+from ..utils.multitalk_utils import normalize_and_scale, split_token_counts_and_frame_ids
 
 class SingleStreamAttention(nn.Module):
     def __init__(

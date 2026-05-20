@@ -8,7 +8,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
 from .attention import flash_attention
-from flash_talk.src.rope_kernel import apply_rotary_complex
+from flash_talk.src.rope_kernel import fast_rope_apply
 
 __all__ = ['WanModel']
 
@@ -61,7 +61,7 @@ def rope_apply(x, grid_sizes, freqs):
                             dim=-1).reshape(seq_len, 1, -1)
 
         # apply rotary embedding
-        x_i = apply_rotary_complex(x[i, :seq_len], freqs_i)
+        x_i = fast_rope_apply(x[i, :seq_len].unsqueeze(0), freqs_i).squeeze(0)
         x_i = torch.cat([x_i, x[i, seq_len:]])
 
         # append to collection
