@@ -1,189 +1,106 @@
-<div align="center">
+# Fast-FlashTalk
 
+基于 [FlashTalk](https://github.com/Soul-AILab/SoulX-FlashTalk) 的高性能推理优化版本，专为 RTX 4090 显卡优化，在保持生成质量的同时显著降低显存占用并提升推理速度，实测可达 **2 倍加速**。
 
-<h1>SoulX-FlashTalk: Real-Time Infinite Streaming of Audio-Driven Avatars via Self-Correcting Bidirectional Distillation</h1>
+## 优化项
 
-[Le Shen*](https://openreview.net/profile?id=%7ELe_Shen3), [Qian Qiao*](https://qianqiaoai.github.io/), [Tan Yu*](https://jiayoujiayoujiayoua.github.io/), [Ke Zhou](https://github.com/jokerz0624), [Tianhang Yu](#), [Yu Zhan](#),  [Zhenjie Wang](#), [Dingcheng Zhen](#), [Ming Tao](#), [Shunshun Yin](#), [Siyuan Liu](#) <sup>&#9993;</sup>
+### 1. DiT 动态参数加载
 
+实现了 DiT 模型参数在 CPU/GPU 之间的动态调度。通过 `num_persistent_param_in_dit` 参数控制常驻 GPU 的参数量，超出部分自动 offload 到 CPU，推理时按需加载，从而在有限显存下运行 14B 参数的 DiT 模型。
 
+### 2. apply_rope 算子优化
 
-<sup>*</sup>Equal Contribution
-<sup>&#9993;</sup>Corresponding Author
+使用 flash_attention 提供的 `apply_rotary_emb` 替代原始的逐元素复数运算实现 RoPE，利用 CUDA kernel 融合加速旋转位置编码的计算。
 
+### 3. SageAttention
 
-<a href='https://soul-ailab.github.io/soulx-flashtalk/'><img src='https://img.shields.io/badge/Project-Page-green'></a>
-<a href='https://arxiv.org/pdf/2512.23379'><img src='https://img.shields.io/badge/Technical-Report-red'></a>
-<a href="https://huggingface.co/Soul-AILab/SoulX-FlashTalk-14B" target="_blank"><img src="https://img.shields.io/badge/🤗 Hugging Face-Spaces-blue" alt="HF space"></a>&nbsp;
-<a href='https://huggingface.co/Soul-AILab/SoulX-FlashTalk-14B'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-blue'></a>
-</div>
+集成 [SageAttention](https://github.com/thu-ml/SageAttention) 替代标准注意力计算，支持 `sageattn` 和 `sageattn_varlen` 两种模式。对短序列（< 512）自动回退至 flash_attn 以保持最优性能。
 
+### 4. T5 Cache
 
-## 🔥 News
-- **2026.02.12** - We have released the [SoulX-FlashHead](https://github.com/Soul-AILab/SoulX-FlashHead), which is a streaming talking head project that achieves real-time performance on consumer GPUs (e.g., RTX 4090/5090).
-- **2026.01.08** - We have released the [inference code](https://github.com/Soul-AILab/SoulX-FlashTalk), and the [model weights](https://huggingface.co/Soul-AILab/SoulX-FlashTalk-14B).
-- **2025.12.30** - We released **Project page** on [SoulX-FlashTalk](https://soul-ailab.github.io/soulx-flashtalk/).
-- **2025.12.30** - We released **SoulX-FlashTalk Technical Report** on [Arxiv](https://arxiv.org/pdf/2512.23379) and [GitHub repository](./assets/SoulX_FlashTalk.pdf).
+对 T5 编码器的推理结果使用 `lru_cache` 进行缓存（默认 maxsize=20），相同文本 prompt 的重复推理直接返回缓存结果，避免重复计算。
 
-## 🤫 Coming soon
-**A 4-GPU real-time version of SoulX-FlashTalk.**
+## 安装
 
-## 📑 Todo List
-- [x] Technical report 
-- [x] Project Page
-- [x] Inference code
-- [x] Checkpoint release
-- [ ] Online demo
-
-## 📢 Live Streaming & Video Podcast
-
-<p align="center">
-  <video src="https://private-user-images.githubusercontent.com/176391424/542734488-c2c68ca1-5ac1-431f-9783-7af6e20e243e.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Njk3NjU2NzUsIm5iZiI6MTc2OTc2NTM3NSwicGF0aCI6Ii8xNzYzOTE0MjQvNTQyNzM0NDg4LWMyYzY4Y2ExLTVhYzEtNDMxZi05NzgzLTdhZjZlMjBlMjQzZS5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMTMwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDEzMFQwOTI5MzVaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1hNGZmZTY1OGRlZjRiNTBiM2Y2YjlhM2E3MWZhYmVhZDIxMDI3ZGFmZmY1NmVjZDgzNzVkODQ1YjM1Y2M0NmEzJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.boX3RzfPeOTMhKwt9ZLzsD8sgEJep_OEGDvP7fnqzTA" style="width:100%; max-width:640px; aspect-ratio:16/9; object-fit:cover;" controls loop></video>
-</p>
-
-## 🎬 Online Demos
-<table>
-  <tbody>
-    <tr>
-      <td width="50%"><video src="https://private-user-images.githubusercontent.com/176391424/542681016-8405bc16-836d-4497-aa86-b62e9fc7dbed.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Njk3NjAyNDUsIm5iZiI6MTc2OTc1OTk0NSwicGF0aCI6Ii8xNzYzOTE0MjQvNTQyNjgxMDE2LTg0MDViYzE2LTgzNmQtNDQ5Ny1hYTg2LWI2MmU5ZmM3ZGJlZC5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMTMwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDEzMFQwNzU5MDVaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1kODAzMzcyZjQzZDg3N2U1YjJlNDZhOTE4ZTllMGRlOTY4OWZhOWVjOWZjNjc1N2QwNWU5OGQ2ZWVjMzY0YWYxJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.3oKK0XwqanMJZy6iARStVaPbMRcpQWeTrRlCNQeSXl0" style="width:100%; aspect-ratio:16/9; object-fit:cover;" controls loop></video></td>
-      <td width="50%"><video src="https://private-user-images.githubusercontent.com/176391424/542682295-9e59ad13-7d3a-4bfc-a949-1a00da5d19f4.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Njk3NjAyNTksIm5iZiI6MTc2OTc1OTk1OSwicGF0aCI6Ii8xNzYzOTE0MjQvNTQyNjgyMjk1LTllNTlhZDEzLTdkM2EtNGJmYy1hOTQ5LTFhMDBkYTVkMTlmNC5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMTMwJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDEzMFQwNzU5MTlaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1jOGNhMDcwZGUyYjdkMzM5YTZmYjFjMTMxZDQ0MTI5YmVmNjEzMWNmMjJmZTkyMjc5NWRmMTQzMGIzNjhjYjAyJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.9fzD-WHHZPl5lm6W4S-cYU5giKsid0wCQj4qpkGI838" style="width:100%; aspect-ratio:16/9; object-fit:cover;" controls loop></video></td>
-    </tr>
-  </tbody>
-</table>
-
-## 🌰 Examples
-
-
-<table>
-  <tbody>
-    <!-- Row 1: Videos 1-5 -->
-    <tr>
-      <td width="30%"><video src="https://private-user-images.githubusercontent.com/176391424/536123542-cee5c716-3267-42d9-86c0-93de8e9ed7fa.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Njg0Njk5NDIsIm5iZiI6MTc2ODQ2OTY0MiwicGF0aCI6Ii8xNzYzOTE0MjQvNTM2MTIzNTQyLWNlZTVjNzE2LTMyNjctNDJkOS04NmMwLTkzZGU4ZTllZDdmYS5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMTE1JTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDExNVQwOTM0MDJaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT04NjhjZjYxYmJkZTE2M2I4YTVhNWNhN2U5ZDBhZGM0Yzc2NGM4YjA0ZDQ4NGIzMGEzZjVmZGIzOWZmYTI4Mzg1JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.8fNUNx1Io8JvBghhQAC7mmHHa_oF3ajAd-cOeXnoGwI" style="width:100%; aspect-ratio:448/832; object-fit:cover;" controls loop></video></td>
-      <td width="30%"><video src=https://private-user-images.githubusercontent.com/176391424/536124198-2ce79455-edb7-4fba-8522-dc9448ddb37a.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Njg0Njk5MzksIm5iZiI6MTc2ODQ2OTYzOSwicGF0aCI6Ii8xNzYzOTE0MjQvNTM2MTI0MTk4LTJjZTc5NDU1LWVkYjctNGZiYS04NTIyLWRjOTQ0OGRkYjM3YS5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMTE1JTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDExNVQwOTMzNTlaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT1lNTgyMWMxNWU2MjI0YjQwNmJmM2Y4MWVlYjc3OTlmMzZjNTg2OGI5MTlhODExMDQ5M2E5NGNhOGJjMTgzMDllJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.0peFNyujNHJ0n8xMyj19VjTalPV74lE6oepewP-pX0A" style="width:100%; aspect-ratio:448/832; object-fit:cover;" controls loop></video></td>
-      <td width="30%"><video src="https://private-user-images.githubusercontent.com/176391424/536126414-de649e5f-b09a-408d-9bff-96574326285c.mp4?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Njg0Njk5MzksIm5iZiI6MTc2ODQ2OTYzOSwicGF0aCI6Ii8xNzYzOTE0MjQvNTM2MTI2NDE0LWRlNjQ5ZTVmLWIwOWEtNDA4ZC05YmZmLTk2NTc0MzI2Mjg1Yy5tcDQ_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMTE1JTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDExNVQwOTMzNTlaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT0zNTQ1Mjg0ZWUwZmIyYzQ2OTkxYzY5ZjZmYjRjYmU0MDA0Yzg3YTgwZDEwYWM4YTIzNmFlMDhkZGVlNDI0N2U3JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.6VE5cy4RuvPe49zuT6OHjo6XILn17QYT9kfS7_X3Efw" style="width:100%; aspect-ratio:448/832; object-fit:cover;" controls loop></video></td>
-    </tr>
-
-  </tbody>
-</table>
-
-
-
-## 📖 Quickstart
-###  🔧 Installation
-#### 1. Create a Conda environment
+需要 **Python 3.11+**、支持 CUDA 的 NVIDIA GPU（推荐显存 24GB 及以上以运行 14B 模型），以及 **ffmpeg**。
 ```bash
-conda create -n flashtalk python=3.10
-conda activate flashtalk
+# Debian/Ubuntu
+sudo apt update && sudo apt install -y ffmpeg
+# macOS（Homebrew
+brew install ffmpeg
+# conda
+conda install -c conda-forge ffmpeg
 ```
-#### 2. Install PyTorch on CUDA
-```bash
-pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
-```
-#### 3. Install other dependencies
-```bash
-pip install -r requirements.txt
-```
-#### 4. Flash-attention installation:
-```bash
-pip install ninja
-pip install flash_attn==2.8.0.post2 --no-build-isolation
-```
-#### 5. FFmpeg installation
-```bash
-# Ubuntu / Debian
-apt-get install ffmpeg
-# CentOS / RHEL
-yum install ffmpeg ffmpeg-devel
-```
-or
-```bash
-# Conda (no root required) 
-conda install -c conda-forge ffmpeg==7
-```
-### 🤗 Model download
-| Model Component | Description | Link |
-| :--- | :--- | :---: |
-| `SoulX-FlashTalk-14B` | Our 14b model| 🤗 [Huggingface](https://huggingface.co/Soul-AILab/SoulX-FlashTalk-14B) |
-| `chinese-wav2vec2-base` | chinese-wav2vec2-base | 🤗 [Huggingface](https://huggingface.co/TencentGameMate/chinese-wav2vec2-base) |
 
 ```bash
-# If you are in china mainland, run this first: export HF_ENDPOINT=https://hf-mirror.com
-pip install "huggingface_hub[cli]"
-huggingface-cli download Soul-AILab/SoulX-FlashTalk-14B --local-dir ./models/SoulX-FlashTalk-14B
-huggingface-cli download TencentGameMate/chinese-wav2vec2-base --local-dir ./models/chinese-wav2vec2-base
-```
-### 🚀 Inference
-```bash
-# Infer on single GPU
-# Requires more than 64G of VRAM. Use --cpu_offload to reduce VRAM usage to 40G.
-bash inference_script_single_gpu.sh
-
-# Infer on multy GPUs
-# Real-time inference speed can only be supported on 8xH800 or higher graphics cards
-bash inference_script_multi_gpu.sh
+pip install fast-flashtalk
 ```
 
-### 👋 Online Demo 
-Coming Soon!
 
+## 模型与数据准备
 
-## 📧 Contact Us
-<!-- If you are interested in leaving a message to our work, feel free to email le.shen@mail.dhu.edu.cn or qiaoqian@soulapp.cn or yutan@soulapp.cn or zhouke@soulapp.cn or liusiyuan@soulapp.cn
-
-You’re welcome to join our WeChat group for technical discussions, updates.
-
-Due to Group 1 reaching its capacity, we have opened a new WeChat group for further technical discussions and updates. Feel free to join us!
-<p align="center">
-  <br>
-  <span style="display: inline-block; margin-right: 10px;">
-    <img src="assets/wechat_group.png" width="300" alt="WeChat Group QR Code"/>
-  </span>
-</p> -->
-If you are interested in leaving a message to our work, feel free to email le.shen@mail.dhu.edu.cn or qiaoqian@soulapp.cn or yutan@soulapp.cn or zhouke@soulapp.cn or liusiyuan@soulapp.cn
-
-Due to Group 1 reaching its capacity, we have opened a new WeChat group. Additionally, we represent **SoulApp** and warmly welcome everyone to download the app and join our Soul group for further technical discussions and updates!
-
-<div align="center">
-  <table>
-    <tr>
-      <td align="center">
-        <img src="assets/wechat_group.png" width="300" alt="WeChat Group QR Code"/>
-        <br />
-        <strong>Join WeChat Group<br>(加入微信技术群)</strong>
-      </td>
-      <td width="100"></td>
-      <td align="center">
-        <img src="assets/soul_group.png" width="300" alt="Soul App Group QR Code"/>
-        <br />
-        <strong>Download SoulApp & Join Group<br>(下载SoulApp加入群组)</strong>
-      </td>
-    </tr>
-  </table>
-</div>
-
- 
-## 📚 Citation
-
-If you find our work useful in your research, please consider citing:
+推理前需自行下载模型权重：
 
 ```
-@misc{shen2025soulxflashtalktechnicalreport,
-      title={SoulX-FlashTalk: Real-Time Infinite Streaming of Audio-Driven Avatars via Self-Correcting Bidirectional Distillation}, 
-      author={Le Shen and Qian Qiao and Tan Yu and Ke Zhou and Tianhang Yu and Yu Zhan and Zhenjie Wang and Ming Tao and Shunshun Yin and Siyuan Liu},
-      year={2025},
-      eprint={2512.23379},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2512.23379}, 
-}
+modelscope download Soul-AILab/SoulX-FlashTalk-14B --local_dir checkpoints/Soul-AILab/SoulX-FlashTalk-14B
+modelscope download TencentGameMate/chinese-wav2vec2-base --local_dir checkpoints/TencentGameMate/chinese-wav2vec2-basechinese-wav2vec2-base
 ```
 
-## 🙇 Acknowledgement
-- [Infinitetalk](https://github.com/MeiGen-AI/InfiniteTalk) and [Wan](https://github.com/Wan-Video/Wan2.1): the base model we built upon.
-- [Self forcing](https://github.com/guandeh17/Self-Forcing): the codebase we built upon.
-- [DMD](https://github.com/tianweiy/DMD2) and [Self forcing++](https://github.com/justincui03/Self-Forcing-Plus-Plus): the key distillation technique used by our method.
-> [!TIP]
-> If you find our work useful, please also consider starring the original repositories of these foundational methods.
+## 使用说明
 
-## 💡 Star History
+首次创建 `FlashTalkPipeline` 时会从磁盘加载多路权重、完成量化与显存调度初始化；首次调用 `generate` 时还可能包含 CUDA 预热、部分算子首次执行等一次性开销，因此**第一次运行整体会明显慢于后续同进程内的推理**，属正常现象。同一进程内再次生成通常会快很多。
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Soul-AILab/SoulX-FlashTalk&type=date&legend=top-left)](https://www.star-history.com/#Soul-AILab/SoulX-FlashTalk&type=date&legend=top-left)
+### 最小示例
+
+```python
+from fast_flashtalk import Audio, FlashTalkPipeline, Image
+
+checkpoint_dir = "path/to/SoulX-FlashTalk-14B"
+wav2vec_dir = "path/to/chinese-wav2vec2-base"
+
+pipeline = FlashTalkPipeline(
+    checkpoint_dir=checkpoint_dir,
+    wav2vec_dir=wav2vec_dir,
+    num_persistent_param_in_dit=15_000_000_000,
+)
+
+image = Image(uri="path/to/portrait.png")
+audio = Audio(uri="path/to/speech.wav")
+
+video = pipeline.generate(
+    input_prompt="人物与场景描述，用于引导画面风格与内容。",
+    audio=audio,
+    image=image,
+    target_size=(1024, 1024),
+)
+# 添加音频与视频合并
+#video.merge_audio(audio, output_path="test.mp4")
+# 仅保存视频
+#video.save("test.mp4")
+```
+
+`Image`、`Audio` 使用 `uri` 指向本地图片或音频文件；音频会按管线内配置的采样率重采样。
+
+### `FlashTalkPipeline` 主要参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `checkpoint_dir` | `str` | 必填 | FlashTalk 模型权重根目录 |
+| `wav2vec_dir` | `str` | 必填 | Wav2Vec2 模型本地目录 |
+| `num_persistent_param_in_dit` | `int` | `10_000_000_000` | 常驻 GPU 的 DiT 参数个数上限，显存紧张时适当调小 |
+
+### `generate` 主要参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `input_prompt` | `str` | 必填 | 文本提示，描述人物、场景、镜头等 |
+| `audio` | `Audio` | 必填 | 驱动口型与节奏的音频 |
+| `image` | `Image` | 必填 | 条件图像（人物/画面参考） |
+| `audio_encode_mode` | `"stream"` \| `"once"` | `"once"` | 音频编码方式：`once` 整段编码后按块切分；`stream` 按流式块编码，更省内存 |
+| `target_size` | `tuple[int, int]` \| `None` | `None` | 条件图像与输出分辨率，默认读取 `configs/infer_params.yaml` 中的 `height` / `width` |
+
+返回值类型为 `osc_data.video.Video`，可通过 `.data` 等属性访问帧数据（具体以 `osc_data` 文档为准）。
+
+## 许可证与致谢
+
+上游实现与权重归属请参考 [FlashTalk](https://github.com/Soul-AILab/SoulX-FlashTalk)及相应模型许可。
