@@ -40,26 +40,18 @@ def sinusoidal_embedding_1d(dim, position):
 def fast_rope_apply(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
     if torch.is_complex(freqs):
         freqs = torch.angle(freqs)
-
-    squeeze = False
-    if x.dim() == 3:
-        x = x.unsqueeze(0)
-        squeeze = True
-
     batch_size, seq_len, n_heads, head_dim = x.shape
     _ = batch_size
 
     freqs = freqs.view(seq_len, head_dim // 2)
     cos = torch.cos(freqs).to(torch.float32)
     sin = torch.sin(freqs).to(torch.float32)
-    cos = rearrange(cos, "n d -> 1 1 n d")
-    sin = rearrange(sin, "n d -> 1 1 n d")
-    rotated = (x.to(torch.float32) * cos) + (rotate_half(x.to(torch.float32)) * sin)
-    rotated = rotated.to(x.dtype)
 
-    if squeeze:
-        rotated = rotated.squeeze(0)
-    return rotated
+    rotated = apply_rotary_emb(
+        x.to(torch.float32), cos, sin, interleaved=True, inplace=False
+    )
+
+    return rotated.to(x.dtype)
 
 
 def apply_rotary_complex(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
