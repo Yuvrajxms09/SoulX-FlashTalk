@@ -1,241 +1,118 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import argparse
 import os
-import numpy as np
-import time
-import torch
-import torch.distributed as dist
-import subprocess
-import imageio
-import librosa
-import numpy as np
-from loguru import logger
-from collections import deque
-from datetime import datetime
 
-from flash_talk.inference import get_pipeline, get_base_data, get_audio_embedding, run_pipeline, infer_params
+from loguru import logger
+
+from flash_talk.inference import FlashTalkInferencePipeline, infer_params
+
 
 def _validate_args(args):
-    # Basic check
     assert args.ckpt_dir is not None, "Please specify FlashTalk model checkpoint directory."
     assert args.wav2vec_dir is not None, "Please specify the wav2vec checkpoint directory."
-
     args.base_seed = args.base_seed if args.base_seed >= 0 else 9999
 
+
 def _parse_args():
-    parser = argparse.ArgumentParser(
-        description="Generate video from a text prompt or image using Wan"
-    )
-    parser.add_argument(
-        "--ckpt_dir",
-        type=str,
-        default=None,
-        help="The path to FlashTalk model checkpoint directory.")
-    parser.add_argument(
-        "--wav2vec_dir",
-        type=str,
-        default=None,
-        help="The path to the wav2vec checkpoint directory.")
-    parser.add_argument(
-        "--save_file",
-        type=str,
-        default=None,
-        help="The file to save the generated video to.")
-    parser.add_argument(
-        "--base_seed",
-        type=int,
-        default=9999,
-        help="The seed to use for generating the video.")
+    parser = argparse.ArgumentParser(description="Generate video from a text prompt or image using Wan")
+    parser.add_argument("--ckpt_dir", type=str, default=None, help="The path to FlashTalk model checkpoint directory.")
+    parser.add_argument("--wav2vec_dir", type=str, default=None, help="The path to the wav2vec checkpoint directory.")
+    parser.add_argument("--save_file", type=str, default=None, help="The file to save the generated video to.")
+    parser.add_argument("--base_seed", type=int, default=9999, help="The seed to use for generating the video.")
     parser.add_argument(
         "--input_prompt",
         type=str,
         default="A person is talking. Only the foreground characters are moving, the background remains static.",
-        help="The prompt to generate the video.")
-    parser.add_argument(
-        "--height",
-        type=int,
-        default=infer_params["height"],
-        help="Output video height.")
-    parser.add_argument(
-        "--width",
-        type=int,
-        default=infer_params["width"],
-        help="Output video width.")
+        help="The prompt to generate the video.",
+    )
+    parser.add_argument("--height", type=int, default=infer_params["height"], help="Output video height.")
+    parser.add_argument("--width", type=int, default=infer_params["width"], help="Output video width.")
     parser.add_argument(
         "--cond_image",
         type=str,
         default="examples/man.png",
-        help="[meta file] The condition image path to generate the video.")
+        help="[meta file] The condition image path to generate the video.",
+    )
     parser.add_argument(
         "--audio_path",
         type=str,
         default="examples/cantonese_16k.wav",
-        help="[meta file] The audio path to generate the video.")
+        help="[meta file] The audio path to generate the video.",
+    )
     parser.add_argument(
         "--audio_encode_mode",
         type=str,
         default="stream",
-        choices=['stream', 'once'],
-        help="stream: encode audio chunk before every generation; once: encode audio together")
+        choices=["stream", "once"],
+        help="stream: encode audio chunk before every generation; once: encode audio together",
+    )
     parser.add_argument(
         "--cpu_offload",
         action="store_true",
-        help="Enable CPU offload for low VRAM usage")
+        help="Enable CPU offload for low VRAM usage",
+    )
     parser.add_argument(
         "--keep_dit_on_gpu",
         action="store_true",
-        help="Keep the DiT model resident on GPU instead of using VRAM management.")
+        help="Keep the DiT model resident on GPU instead of using VRAM management.",
+    )
     parser.add_argument(
         "--num_persistent_param_in_dit",
         type=int,
         default=15_000_000_000,
-        help="Target persistent parameter budget for VRAM management.")
+        help="Target persistent parameter budget for VRAM management.",
+    )
     args = parser.parse_args()
-
     _validate_args(args)
-
     return args
-
-def append_frames(writer, frames):
-    frames = frames.numpy().astype(np.uint8)
-    for i in range(frames.shape[0]):
-        writer.append_data(frames[i, :, :, :])
-
-
-def merge_video_audio(temp_video_path, video_path, audio_path):
-    cmd = [
-        'ffmpeg',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-i', temp_video_path,
-        '-i', audio_path,
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-shortest',
-        video_path,
-        '-y',
-    ]
-    subprocess.run(cmd, check=True)
-    os.remove(temp_video_path)
 
 
 def generate(args):
-    sample_rate = infer_params['sample_rate']
-    tgt_fps = infer_params['tgt_fps']
-    cached_audio_duration = infer_params['cached_audio_duration']
-    frame_num = infer_params['frame_num']
-    motion_frames_num = infer_params['motion_frames_num']
-    slice_len = frame_num - motion_frames_num
-
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    rank = int(os.environ.get("RANK", 0))
     target_size = (args.height, args.width)
+    logger.info(
+        f"Starting generation: audio_encode_mode={args.audio_encode_mode}, target_size={target_size}, save_file={args.save_file}"
+    )
+    if not args.cpu_offload:
+        logger.warning(
+            "cpu_offload is disabled; this differs from the fast-copy default and will keep T5/CLIP/VAE resident longer."
+        )
 
-    pipeline = get_pipeline(
-        world_size=world_size,
+    notebook_pipeline = FlashTalkInferencePipeline(
         ckpt_dir=args.ckpt_dir,
         wav2vec_dir=args.wav2vec_dir,
+        world_size=world_size,
         cpu_offload=args.cpu_offload,
         keep_dit_on_gpu=args.keep_dit_on_gpu,
         num_persistent_param_in_dit=args.num_persistent_param_in_dit,
+        base_seed=args.base_seed,
     )
-    get_base_data(pipeline, input_prompt=args.input_prompt, cond_image=args.cond_image, base_seed=args.base_seed, target_size=target_size)
-    human_speech_array_all, _ = librosa.load(args.audio_path, sr=infer_params['sample_rate'], mono=True)
 
-    if rank == 0:
-        logger.info("Data preparation done. Start to generate video...")
-        if args.save_file is None:
-            output_dir = 'sample_results'
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            timestamp = datetime.now().strftime("%Y%m%d-%H:%M:%S-%f")[:-3]
-            filename = f"res_{timestamp}.mp4"
-            filepath = os.path.join(output_dir, filename)
-            args.save_file = filepath
-        temp_video_path = args.save_file + '.temp.mp4'
-        video_writer = imageio.get_writer(
-            temp_video_path,
-            format='mp4',
-            mode='I',
-            fps=tgt_fps,
-            codec='h264',
-            ffmpeg_params=['-bf', '0'],
-        )
-    else:
-        temp_video_path = None
-        video_writer = None
+    if args.save_file is None:
+        output_dir = "sample_results"
+        os.makedirs(output_dir, exist_ok=True)
+        args.save_file = os.path.join(output_dir, f"res_{os.getpid()}.mp4")
 
-    if args.audio_encode_mode == 'once':
-        # pad audio with silence to avoid truncating the last chunk
-        remainder = (len(human_speech_array_all) - frame_num * sample_rate // tgt_fps) % (slice_len * sample_rate // tgt_fps)
-        if remainder > 0:
-            pad_length = slice_len * sample_rate // tgt_fps - remainder
-            human_speech_array_all = np.concatenate([human_speech_array_all, np.zeros(pad_length, dtype=human_speech_array_all.dtype)])
+    artifact = notebook_pipeline.generate(
+        input_prompt=args.input_prompt,
+        audio=args.audio_path,
+        image=args.cond_image,
+        audio_encode_mode=args.audio_encode_mode,
+        target_size=target_size,
+        frame_num=infer_params["frame_num"],
+        motion_frames_num=infer_params["motion_frames_num"],
+        sampling_steps=infer_params["sample_steps"],
+        shift=infer_params["sample_shift"],
+        color_correction_strength=infer_params["color_correction_strength"],
+    )
+    temp_uri = artifact.uri
+    artifact = artifact.merge_audio(args.audio_path, output_path=args.save_file)
+    if temp_uri != args.save_file and os.path.exists(temp_uri):
+        os.remove(temp_uri)
+    logger.info(f"Saving generated video to {args.save_file}")
+    logger.info("Finished.")
+    return artifact
 
-        # encode audio together
-        audio_embedding_all = get_audio_embedding(pipeline, human_speech_array_all)
-        audio_embedding_chunks_list = [audio_embedding_all[:, i * slice_len: i * slice_len + frame_num].contiguous() for i in range((audio_embedding_all.shape[1]-frame_num) // slice_len)]
-        for chunk_idx, audio_embedding_chunk in enumerate(audio_embedding_chunks_list):
-            torch.cuda.synchronize()
-            start_time = time.time()
-
-            # inference
-            video = run_pipeline(pipeline, audio_embedding_chunk)
-
-            if chunk_idx != 0:
-                video = video[motion_frames_num:]
-
-            torch.cuda.synchronize()
-            end_time = time.time()
-            if rank == 0:
-                logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
-                append_frames(video_writer, video.cpu())
-
-    elif args.audio_encode_mode == 'stream':
-        cached_audio_length_sum = sample_rate * cached_audio_duration
-        audio_end_idx = cached_audio_duration * tgt_fps
-        audio_start_idx = audio_end_idx - frame_num
-
-        audio_dq = deque([0.0] * cached_audio_length_sum, maxlen=cached_audio_length_sum)
-
-        human_speech_array_slice_len = slice_len * sample_rate // tgt_fps
-        remainder = len(human_speech_array_all) % human_speech_array_slice_len
-        if remainder > 0:
-            pad_length = human_speech_array_slice_len - remainder
-            human_speech_array_all = np.concatenate([human_speech_array_all, np.zeros(pad_length, dtype=human_speech_array_all.dtype)])
-
-        human_speech_array_slices = human_speech_array_all.reshape(-1, human_speech_array_slice_len)
-
-        for chunk_idx, human_speech_array in enumerate(human_speech_array_slices):
-            # streaming encode audio chunks
-            audio_dq.extend(human_speech_array.tolist())
-            audio_array = np.array(audio_dq)
-            audio_embedding = get_audio_embedding(pipeline, audio_array, audio_start_idx, audio_end_idx)
-
-            torch.cuda.synchronize()
-            start_time = time.time()
-
-            # inference
-            video = run_pipeline(pipeline, audio_embedding)
-            video = video[motion_frames_num:]
-
-            torch.cuda.synchronize()
-            end_time = time.time()
-            if rank == 0:
-                logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
-                append_frames(video_writer, video.cpu())
-
-    if video_writer is not None:
-        video_writer.close()
-
-    if rank == 0:
-        merge_video_audio(temp_video_path, args.save_file, args.audio_path)
-        logger.info(f"Saving generated video to {args.save_file}.mp4")
-        logger.info("Finished.")
-
-    if world_size > 1:
-        dist.barrier()
-        dist.destroy_process_group()
 
 if __name__ == "__main__":
     args = _parse_args()

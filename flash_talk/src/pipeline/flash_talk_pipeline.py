@@ -91,6 +91,9 @@ class FlashTalkPipeline:
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
         )
+        logger.info(
+            f"Loaded T5 encoder on {'cpu' if self.cpu_offload else self.device} from {checkpoint_dir}"
+        )
 
         self.vae_stride = config.vae_stride
         self.patch_size = config.patch_size
@@ -101,12 +104,18 @@ class FlashTalkPipeline:
             device="cpu" if self.cpu_offload else self.device,
             parallel=(USE_PARALLEL_VAE and self.use_usp),
         )
+        logger.info(
+            f"Loaded VAE on {'cpu' if self.cpu_offload else self.device} (parallel={USE_PARALLEL_VAE and self.use_usp})"
+        )
 
         self.clip = CLIPModel(
             dtype=config.clip_dtype,
             device="cpu" if self.cpu_offload else self.device,
             checkpoint_path=os.path.join(checkpoint_dir, config.clip_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.clip_tokenizer))
+        logger.info(
+            f"Loaded CLIP encoder on {'cpu' if self.cpu_offload else self.device}"
+        )
 
         logger.info(f"Creating WanModel from {checkpoint_dir}")
 
@@ -164,6 +173,9 @@ class FlashTalkPipeline:
         self.audio_encoder.feature_extractor._freeze_parameters()
         self.wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_dir, local_files_only=True)
         self.model_names = ["model"]
+        logger.info(
+            f"Loaded audio encoder on {self.device}; cpu_offload={self.cpu_offload}, keep_dit_on_gpu={self.keep_dit_on_gpu}, vram_management={self.vram_management}"
+        )
 
     def enable_vram_management(self, num_persistent_param_in_dit=0):
         dtype = next(iter(self.model.parameters())).dtype
@@ -197,11 +209,15 @@ class FlashTalkPipeline:
         )
         self.enable_cpu_offload()
         self.vram_management = True
+        logger.info(
+            f"VRAM management enabled with max_num_param={num_persistent_param_in_dit}"
+        )
 
     def enable_cpu_offload(self):
         self.cpu_offload = True
 
     def onload_dit_model(self):
+        start_time = time.time()
         if not self.cpu_offload:
             return
         for model_name in self.model_names:
@@ -213,8 +229,11 @@ class FlashTalkPipeline:
                             module.onload()
                 else:
                     model.to(self.device)
+        end_time = time.time()
+        logger.info(f"Onload DiT model time: {end_time - start_time:.2f} seconds")
 
     def offload_dit_model(self):
+        start_time = time.time()
         if not self.cpu_offload:
             return
         for model_name in self.model_names:
@@ -227,6 +246,8 @@ class FlashTalkPipeline:
                 else:
                     model.to(self.device)
         torch.cuda.empty_cache()
+        end_time = time.time()
+        logger.info(f"Offload DiT model time: {end_time - start_time:.2f} seconds")
 
     @torch.no_grad()
     def prepare_params(self,
@@ -256,6 +277,11 @@ class FlashTalkPipeline:
         self.target_h = (self.target_h // 16) * 16
         self.target_w = (self.target_w // 16) * 16
         self.lat_h, self.lat_w = self.target_h // self.vae_stride[1], self.target_w // self.vae_stride[2]
+        logger.info(
+            f"Preparing params: target_size={target_size} -> ({self.target_h}, {self.target_w}), "
+            f"frame_num={frame_num}, motion_frames_num={motion_frames_num}, sampling_steps={sampling_steps}, "
+            f"lat_size=({self.lat_h}, {self.lat_w})"
+        )
 
         if isinstance(cond_image, str):
             cond_image = Image.open(cond_image).convert("RGB")
@@ -324,6 +350,7 @@ class FlashTalkPipeline:
             'y': y,
             'ref_target_masks': None,
         }
+        logger.info(f"Model sequence length budget: max_seq_len={max_seq_len}")
 
         self.latent_motion_frames = self.vae.encode(self.cond_image_tensor)
 
@@ -337,6 +364,9 @@ class FlashTalkPipeline:
     def preprocess_audio(self, speech_array, sr=16000, fps=25):
         audio_duration = len(speech_array) / sr
         video_length = audio_duration * fps
+        logger.info(
+            f"Preprocess audio: samples={len(speech_array)}, sr={sr}, fps={fps}, video_length={video_length:.2f}"
+        )
 
         # wav2vec_feature_extractor
         audio_feature = np.squeeze(
@@ -355,13 +385,16 @@ class FlashTalkPipeline:
 
         audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
         audio_emb = rearrange(audio_emb, "b s d -> s b d")
+        logger.info(f"Audio embedding shape: {tuple(audio_emb.shape)}")
         return audio_emb
 
     @torch.no_grad()
     def generate(self, audio_embedding):
         if self.vram_management:
+            logger.info("Onloading DiT via VRAM management.")
             self.onload_dit_model()
         elif self.cpu_offload:
+            logger.info("Moving DiT to GPU for inference.")
             self.model.to(self.device)
         # evaluation mode
         with torch.no_grad():
@@ -395,7 +428,7 @@ class FlashTalkPipeline:
                 torch.cuda.synchronize()
                 end_time = time.time()
                 if self.rank == 0:
-                    print(f'[generate] model denoise per step: {end_time - start_time}s')
+                    logger.info(f"[generate] model denoise per step: {end_time - start_time:.2f}s")
 
                 noise_pred = -noise_pred_cond
 
@@ -412,6 +445,7 @@ class FlashTalkPipeline:
                 self.model.cpu()
                 torch.cuda.empty_cache()
                 self.vae.model.to(self.device)
+                logger.info("DiT offloaded back to CPU; VAE moved to GPU for decode.")
 
             torch.cuda.synchronize()
             start_decode_time = time.time()
@@ -419,7 +453,7 @@ class FlashTalkPipeline:
             torch.cuda.synchronize()
             end_decode_time = time.time()
             if self.rank == 0:
-                print(f'[generate] decode video frames: {end_decode_time - start_decode_time}s')
+                logger.info(f"[generate] decode video frames: {end_decode_time - start_decode_time:.2f}s")
         
         torch.cuda.synchronize()
         start_color_correction_time = time.time()
@@ -430,7 +464,7 @@ class FlashTalkPipeline:
         torch.cuda.synchronize()
         end_color_correction_time = time.time()
         if self.rank == 0:
-            print(f'[generate] color correction: {end_color_correction_time - start_color_correction_time}s')
+            logger.info(f"[generate] color correction: {end_color_correction_time - start_color_correction_time:.2f}s")
 
         torch.cuda.synchronize()
         start_encode_time = time.time()
@@ -438,7 +472,7 @@ class FlashTalkPipeline:
         torch.cuda.synchronize()
         end_encode_time = time.time()
         if self.rank == 0:
-            print(f'[generate] encode motion frames: {end_encode_time - start_encode_time}s')
+            logger.info(f"[generate] encode motion frames: {end_encode_time - start_encode_time:.2f}s")
 
         if self.cpu_offload:
             self.vae.model.cpu()

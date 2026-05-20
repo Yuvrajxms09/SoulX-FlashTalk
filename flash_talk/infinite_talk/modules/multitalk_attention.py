@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
+from loguru import logger
 from xfuser.core.distributed import (
     get_sequence_parallel_rank,
     get_sequence_parallel_world_size,
@@ -12,7 +13,7 @@ except ImportError:
     xformers = None
 
 from flash_talk.src.rope_kernel import RotaryPositionalEmbedding1D
-from flash_talk.wan.modules.attention import attention as optimized_attention
+from flash_talk.wan.modules.attention import attention as direct_attention, flash_attention as length_aware_attention
 from ..utils.multitalk_utils import normalize_and_scale, split_token_counts_and_frame_ids
 
 class SingleStreamAttention(nn.Module):
@@ -89,6 +90,10 @@ class SingleStreamAttention(nn.Module):
                 visual_seqlen, _ = split_token_counts_and_frame_ids(N_t, N_h * N_w, sp_size, sp_rank)
             attn_bias = xformers.ops.fmha.attn_bias.BlockDiagonalMask.from_seqlens(visual_seqlen, kv_seq)
         else:
+            if enable_sp:
+                logger.warning(
+                    "Sequence-parallel attention requested but xformers is unavailable; falling back without BlockDiagonalMask."
+                )
             attn_bias = None
 
         if enable_sp and xformers is not None:
@@ -96,7 +101,12 @@ class SingleStreamAttention(nn.Module):
                 q, encoder_k, encoder_v, attn_bias=attn_bias, op=None
             )
         else:
-            x = optimized_attention(q, encoder_k, encoder_v)
+            if enable_sp:
+                q_lens = torch.as_tensor(visual_seqlen, dtype=torch.int32, device=q.device)
+                k_lens = torch.as_tensor(kv_seq, dtype=torch.int32, device=q.device)
+                x = length_aware_attention(q, encoder_k, encoder_v, q_lens=q_lens, k_lens=k_lens)
+            else:
+                x = direct_attention(q, encoder_k, encoder_v)
         x = rearrange(x, "B M H K -> B H M K") 
 
         # linear transform
@@ -210,7 +220,7 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         q = rearrange(q, "B H M K -> B M H K")
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-        x = optimized_attention(q, encoder_k, encoder_v)
+        x = direct_attention(q, encoder_k, encoder_v)
         x = rearrange(x, "B M H K -> B H M K")
 
         # linear transform
