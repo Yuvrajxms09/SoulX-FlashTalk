@@ -398,6 +398,9 @@ class FlashTalkPipeline:
 
     @torch.no_grad()
     def generate(self, audio_embedding):
+        if self.cpu_offload:
+            self.vae.model.to(self.device)
+            self.vae.scale = [tensor.to(self.device) if isinstance(tensor, torch.Tensor) else tensor for tensor in self.vae.scale]
         if self.vram_management:
             logger.info("Onloading DiT via VRAM management.")
             self.onload_dit_model()
