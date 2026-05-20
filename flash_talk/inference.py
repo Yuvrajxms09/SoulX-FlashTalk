@@ -279,7 +279,7 @@ class _FFmpegRawVideoWriter:
             pass
 
 
-class FlashTalkInferencePipeline:
+class NotebookFlashTalkPipeline:
     def __init__(
         self,
         ckpt_dir: str,
@@ -442,8 +442,4 @@ class FlashTalkInferencePipeline:
 
 
 # Fast-copy compatible public alias.
-FlashTalkPipeline = FlashTalkInferencePipeline
-
-# Backward-compatible aliases for older notebook cells.
-FlashTalkNotebookPipeline = FlashTalkInferencePipeline
-NotebookFlashTalkPipeline = FlashTalkInferencePipeline
+FlashTalkPipeline = NotebookFlashTalkPipeline
