@@ -81,6 +81,15 @@ def _parse_args():
         "--cpu_offload",
         action="store_true",
         help="Enable CPU offload for low VRAM usage")
+    parser.add_argument(
+        "--keep_dit_on_gpu",
+        action="store_true",
+        help="Keep the DiT model resident on GPU instead of using VRAM management.")
+    parser.add_argument(
+        "--num_persistent_param_in_dit",
+        type=int,
+        default=15_000_000_000,
+        help="Target persistent parameter budget for VRAM management.")
     args = parser.parse_args()
 
     _validate_args(args)
@@ -122,7 +131,14 @@ def generate(args):
     rank = int(os.environ.get("RANK", 0))
     target_size = (args.height, args.width)
 
-    pipeline = get_pipeline(world_size=world_size, ckpt_dir=args.ckpt_dir, wav2vec_dir=args.wav2vec_dir, cpu_offload=args.cpu_offload)
+    pipeline = get_pipeline(
+        world_size=world_size,
+        ckpt_dir=args.ckpt_dir,
+        wav2vec_dir=args.wav2vec_dir,
+        cpu_offload=args.cpu_offload,
+        keep_dit_on_gpu=args.keep_dit_on_gpu,
+        num_persistent_param_in_dit=args.num_persistent_param_in_dit,
+    )
     get_base_data(pipeline, input_prompt=args.input_prompt, cond_image=args.cond_image, base_seed=args.base_seed, target_size=target_size)
     human_speech_array_all, _ = librosa.load(args.audio_path, sr=infer_params['sample_rate'], mono=True)
 

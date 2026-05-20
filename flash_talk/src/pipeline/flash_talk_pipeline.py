@@ -14,13 +14,15 @@ from einops import rearrange
 from transformers import Wav2Vec2FeatureExtractor
 
 from flash_talk.wan.modules import (CLIPModel, T5EncoderModel, WanVAE)
+from flash_talk.wan.modules.model import WanLayerNorm, WanRMSNorm
 from flash_talk.infinite_talk.modules.multitalk_model import WanModel
 from flash_talk.infinite_talk.audio_analysis.wav2vec2 import Wav2Vec2Model
 from flash_talk.infinite_talk.utils.multitalk_utils import match_and_blend_colors_torch, resize_and_centercrop
+from flash_talk.src.vram_management import enable_vram_management, AutoWrappedLinear, AutoWrappedModule
 
 # compile models to speedup inference
-COMPILE_MODEL = True
-COMPILE_VAE = True
+COMPILE_MODEL = False
+COMPILE_VAE = False
 # use parallel vae to speedup decode/encode
 USE_PARALLEL_VAE = True
 
@@ -54,6 +56,8 @@ class FlashTalkPipeline:
         device="cuda",
         use_usp=False,
         cpu_offload=False,
+        keep_dit_on_gpu=False,
+        num_persistent_param_in_dit=15_000_000_000,
         num_timesteps=1000,
         use_timestep_transform=True,
     ):
@@ -76,11 +80,14 @@ class FlashTalkPipeline:
         self.use_usp = use_usp and dist.is_initialized()
         self.param_dtype = config.param_dtype
         self.cpu_offload = cpu_offload and not self.use_usp
+        self.keep_dit_on_gpu = keep_dit_on_gpu
+        self.vram_management = False
+        self.num_persistent_param_in_dit = num_persistent_param_in_dit
 
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
-            device=self.device,
+            device="cpu" if self.cpu_offload else self.device,
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
         )
@@ -91,13 +98,13 @@ class FlashTalkPipeline:
         self.vae = WanVAE(
             vae_path=os.path.join(checkpoint_dir, config.vae_checkpoint),
             dtype=self.param_dtype,
-            device=self.device,
+            device="cpu" if self.cpu_offload else self.device,
             parallel=(USE_PARALLEL_VAE and self.use_usp),
         )
 
         self.clip = CLIPModel(
             dtype=config.clip_dtype,
-            device=self.device,
+            device="cpu" if self.cpu_offload else self.device,
             checkpoint_path=os.path.join(checkpoint_dir, config.clip_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.clip_tokenizer))
 
@@ -105,11 +112,22 @@ class FlashTalkPipeline:
 
         self.model = WanModel.from_pretrained(
             checkpoint_dir,
-            device_map='cpu' if self.cpu_offload else self.device,
+            device_map=self.device if self.keep_dit_on_gpu else "cpu",
             torch_dtype=self.param_dtype,
         )
 
         self.model.eval().requires_grad_(False)
+        if self.keep_dit_on_gpu:
+            logger.info("Keeping DiT fully resident on GPU.")
+        else:
+            self.model.cpu()
+            torch.cuda.empty_cache()
+            logger.info(
+                f"Enable low vram mode with num_persistent_param_in_dit: {num_persistent_param_in_dit}"
+            )
+            self.enable_vram_management(
+                num_persistent_param_in_dit=num_persistent_param_in_dit
+            )
 
         if use_usp:
             from xfuser.core.distributed import get_sequence_parallel_world_size
@@ -145,6 +163,70 @@ class FlashTalkPipeline:
         self.audio_encoder = Wav2Vec2Model.from_pretrained(wav2vec_dir, local_files_only=True).to(self.device)
         self.audio_encoder.feature_extractor._freeze_parameters()
         self.wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_dir, local_files_only=True)
+        self.model_names = ["model"]
+
+    def enable_vram_management(self, num_persistent_param_in_dit=0):
+        dtype = next(iter(self.model.parameters())).dtype
+        logger.info(f"Enable vram management with dtype: {dtype}")
+        enable_vram_management(
+            self.model,
+            module_map={
+                torch.nn.Linear: AutoWrappedLinear,
+                torch.nn.Conv3d: AutoWrappedModule,
+                torch.nn.LayerNorm: AutoWrappedModule,
+                WanLayerNorm: AutoWrappedModule,
+                WanRMSNorm: AutoWrappedModule,
+            },
+            module_config=dict(
+                offload_dtype=dtype,
+                offload_device="cpu",
+                onload_dtype=dtype,
+                onload_device=self.device,
+                computation_dtype=self.param_dtype,
+                computation_device=self.device,
+            ),
+            max_num_param=num_persistent_param_in_dit,
+            overflow_module_config=dict(
+                offload_dtype=dtype,
+                offload_device="cpu",
+                onload_dtype=dtype,
+                onload_device="cpu",
+                computation_dtype=self.param_dtype,
+                computation_device=self.device,
+            ),
+        )
+        self.enable_cpu_offload()
+        self.vram_management = True
+
+    def enable_cpu_offload(self):
+        self.cpu_offload = True
+
+    def onload_dit_model(self):
+        if not self.cpu_offload:
+            return
+        for model_name in self.model_names:
+            model = getattr(self, model_name)
+            if model is not None:
+                if hasattr(model, "vram_management_enabled") and model.vram_management_enabled:
+                    for module in model.modules():
+                        if hasattr(module, "onload"):
+                            module.onload()
+                else:
+                    model.to(self.device)
+
+    def offload_dit_model(self):
+        if not self.cpu_offload:
+            return
+        for model_name in self.model_names:
+            model = getattr(self, model_name)
+            if model is not None:
+                if hasattr(model, "vram_management_enabled") and model.vram_management_enabled:
+                    for module in model.modules():
+                        if hasattr(module, "offload"):
+                            module.offload()
+                else:
+                    model.to(self.device)
+        torch.cuda.empty_cache()
 
     @torch.no_grad()
     def prepare_params(self,
@@ -170,6 +252,9 @@ class FlashTalkPipeline:
         self.motion_frames_num = motion_frames_num
 
         self.target_h, self.target_w = target_size
+        # Round to a multiple of 16 so latent sizes stay even for unpatchify.
+        self.target_h = (self.target_h // 16) * 16
+        self.target_w = (self.target_w // 16) * 16
         self.lat_h, self.lat_w = self.target_h // self.vae_stride[1], self.target_w // self.vae_stride[2]
 
         if isinstance(cond_image, str):
@@ -210,9 +295,10 @@ class FlashTalkPipeline:
         msk = msk.transpose(1, 2).to(self.param_dtype)
 
         y = torch.concat([msk, common_y], dim=1)
-
-
-        max_seq_len = ((frame_num - 1) // self.vae_stride[0] + 1) * self.lat_h * self.lat_w // (self.patch_size[1] * self.patch_size[2])
+        n_t = (frame_num - 1) // self.vae_stride[0] + 1
+        n_h = self.lat_h // self.patch_size[1]
+        n_w = self.lat_w // self.patch_size[2]
+        max_seq_len = n_t * n_h * n_w
         max_seq_len = int(math.ceil(max_seq_len / self.sp_size)) * self.sp_size
 
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -273,7 +359,9 @@ class FlashTalkPipeline:
 
     @torch.no_grad()
     def generate(self, audio_embedding):
-        if self.cpu_offload:
+        if self.vram_management:
+            self.onload_dit_model()
+        elif self.cpu_offload:
             self.model.to(self.device)
         # evaluation mode
         with torch.no_grad():
@@ -355,6 +443,8 @@ class FlashTalkPipeline:
         if self.cpu_offload:
             self.vae.model.cpu()
             torch.cuda.empty_cache()
+        if self.vram_management:
+            self.offload_dit_model()
 
         gen_video_samples = videos[:, :, self.motion_frames_num:]
 

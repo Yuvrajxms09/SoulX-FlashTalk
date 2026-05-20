@@ -1,12 +1,16 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from xfuser.core.distributed import (
     get_sequence_parallel_rank,
     get_sequence_parallel_world_size,
 )
-import xformers.ops
+try:
+    import xformers.ops
+except ImportError:
+    xformers = None
 
 from ..utils.multitalk_utils import RotaryPositionalEmbedding1D, normalize_and_scale, split_token_counts_and_frame_ids
 
@@ -75,7 +79,7 @@ class SingleStreamAttention(nn.Module):
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
     
-        if enable_sp:
+        if enable_sp and xformers is not None:
             assert kv_seq is not None, f"kv_seq should not be None."
             # context parallel
             if visual_seqlen is None:
@@ -86,7 +90,14 @@ class SingleStreamAttention(nn.Module):
         else:
             attn_bias = None
 
-        x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=attn_bias, op=None,)
+        if xformers is not None:
+            x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=attn_bias, op=None,)
+        else:
+            x = F.scaled_dot_product_attention(
+                q.transpose(1, 2),
+                encoder_k.transpose(1, 2),
+                encoder_v.transpose(1, 2),
+            ).transpose(1, 2)
         x = rearrange(x, "B M H K -> B H M K") 
 
         # linear transform
