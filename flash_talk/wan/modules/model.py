@@ -7,8 +7,8 @@ import torch.nn as nn
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
-from .attention import attention, flash_attention
-from flash_talk.src.rope_kernel import fast_rope_apply
+from .attention import attention
+from flash_talk.src.rope_kernel import VideoRopePosition3DEmb, fast_rope_apply
 
 __all__ = ['WanModel']
 
@@ -27,46 +27,6 @@ def sinusoidal_embedding_1d(dim, position):
         position, torch.pow(10000, -torch.arange(half).to(position).div(half)))
     x = torch.cat([torch.cos(sinusoid), torch.sin(sinusoid)], dim=1)
     return x
-
-
-@amp.autocast(enabled=False)
-def rope_params(max_seq_len, dim, theta=10000):
-    assert dim % 2 == 0
-    freqs = torch.outer(
-        torch.arange(max_seq_len),
-        1.0 / torch.pow(theta,
-                        torch.arange(0, dim, 2).to(torch.float64).div(dim)))
-    freqs = torch.polar(torch.ones_like(freqs), freqs)
-    return freqs
-
-
-@amp.autocast(enabled=False)
-def rope_apply(x, grid_sizes, freqs):
-    n, c = x.size(2), x.size(3) // 2
-
-    # split freqs
-    freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
-
-    # loop over samples
-    output = []
-    for i, (f, h, w) in enumerate(grid_sizes.tolist()):
-        seq_len = f * h * w
-
-        # precompute multipliers
-        freqs_i = torch.cat([
-            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
-        ],
-                            dim=-1).reshape(seq_len, 1, -1)
-
-        # apply rotary embedding
-        x_i = fast_rope_apply(x[i, :seq_len].unsqueeze(0), freqs_i).squeeze(0)
-        x_i = torch.cat([x_i, x[i, seq_len:]])
-
-        # append to collection
-        output.append(x_i)
-    return torch.stack(output).float()
 
 
 class WanRMSNorm(nn.Module):
@@ -144,13 +104,10 @@ class WanSelfAttention(nn.Module):
             return q, k, v
 
         q, k, v = qkv_fn(x)
+        q = fast_rope_apply(q, freqs)
+        k = fast_rope_apply(k, freqs)
 
-        x = flash_attention(
-            q=rope_apply(q, grid_sizes, freqs),
-            k=rope_apply(k, grid_sizes, freqs),
-            v=v,
-            k_lens=seq_lens,
-            window_size=self.window_size)
+        x = attention(q=q, k=k, v=v).type_as(x)
 
         # output
         x = x.flatten(2)
@@ -175,7 +132,7 @@ class WanT2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
 
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v).type_as(x)
 
         # output
         x = x.flatten(2)
@@ -218,7 +175,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         v_img = self.v_img(context_img).view(b, -1, n, d)
         img_x = attention(q, k_img, v_img)
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v).type_as(x)
 
         # output
         x = x.flatten(2)
@@ -475,13 +432,11 @@ class WanModel(ModelMixin, ConfigMixin):
 
         # buffers (don't use register_buffer otherwise dtype will be changed in to())
         assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
-        d = dim // num_heads
-        self.freqs = torch.cat([
-            rope_params(1024, d - 4 * (d // 6)),
-            rope_params(1024, 2 * (d // 6)),
-            rope_params(1024, 2 * (d // 6))
-        ],
-                               dim=1)
+        self.head_dim = dim // num_heads
+        self.rope = VideoRopePosition3DEmb(
+            head_dim=self.head_dim, len_h=1024, len_w=1024, len_t=1024
+        )
+        self.freqs = None
 
         if model_type == 'i2v' or model_type == 'flf2v':
             self.img_emb = MLPProj(1280, dim, flf_pos_emb=model_type == 'flf2v')
@@ -521,13 +476,12 @@ class WanModel(ModelMixin, ConfigMixin):
         """
         if self.model_type == 'i2v' or self.model_type == 'flf2v':
             assert clip_fea is not None and y is not None
-        # params
-        device = self.patch_embedding.weight.device
-        if self.freqs.device != device:
-            self.freqs = self.freqs.to(device)
-
         if y is not None:
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
+
+        _, T, H, W = x[0].shape
+        freqs_shape = torch.Size([1, T, H // 2, W // 2, self.head_dim])
+        self.freqs = self.rope.generate_embeddings(B_T_H_W_C=freqs_shape)
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
