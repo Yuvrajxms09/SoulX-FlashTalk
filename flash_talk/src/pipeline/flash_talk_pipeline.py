@@ -401,9 +401,11 @@ class FlashTalkPipeline:
         if self.vram_management:
             logger.info("Onloading DiT via VRAM management.")
             self.onload_dit_model()
-        elif self.cpu_offload:
+        elif self.cpu_offload and not self.keep_dit_on_gpu:
             logger.info("Moving DiT to GPU for inference.")
             self.model.to(self.device)
+        elif self.keep_dit_on_gpu and self.rank == 0:
+            logger.info("DiT already resident on GPU; no move needed.")
         # evaluation mode
         with torch.no_grad():
 
