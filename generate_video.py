@@ -62,6 +62,19 @@ def _parse_args():
         default=15_000_000_000,
         help="Target persistent parameter budget for VRAM management.",
     )
+    parser.add_argument(
+        "--t5_quant",
+        type=str,
+        default=None,
+        choices=["int8", "fp8"],
+        help="Optional quantized T5 loading mode.",
+    )
+    parser.add_argument(
+        "--t5_quant_dir",
+        type=str,
+        default=None,
+        help="Directory containing t5_int8.safetensors / t5_fp8.safetensors and map files.",
+    )
     args = parser.parse_args()
     _validate_args(args)
     return args
@@ -85,6 +98,8 @@ def generate(args):
         cpu_offload=args.cpu_offload,
         keep_dit_on_gpu=args.keep_dit_on_gpu,
         num_persistent_param_in_dit=args.num_persistent_param_in_dit,
+        t5_quant=args.t5_quant,
+        t5_quant_dir=args.t5_quant_dir,
         base_seed=args.base_seed,
     )
 

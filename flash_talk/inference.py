@@ -33,6 +33,8 @@ def get_pipeline(
     cpu_offload=False,
     keep_dit_on_gpu=False,
     num_persistent_param_in_dit=15_000_000_000,
+    t5_quant=None,
+    t5_quant_dir=None,
     helper_cpu_offload=True,
 ):
     cfg = multitalk_14B
@@ -50,6 +52,8 @@ def get_pipeline(
         cpu_offload=cpu_offload,
         keep_dit_on_gpu=keep_dit_on_gpu,
         num_persistent_param_in_dit=num_persistent_param_in_dit,
+        t5_quant=t5_quant,
+        t5_quant_dir=t5_quant_dir,
     )
     if not helper_cpu_offload:
         logger.warning(
@@ -285,6 +289,8 @@ class FlashTalkInferencePipeline:
         cpu_offload: bool = True,
         keep_dit_on_gpu: bool = False,
         num_persistent_param_in_dit: int = 15_000_000_000,
+        t5_quant: str | None = None,
+        t5_quant_dir: str | None = None,
         base_seed: int = 9999,
     ) -> None:
         self.pipeline = get_pipeline(
@@ -294,6 +300,8 @@ class FlashTalkInferencePipeline:
             cpu_offload=cpu_offload,
             keep_dit_on_gpu=keep_dit_on_gpu,
             num_persistent_param_in_dit=num_persistent_param_in_dit,
+            t5_quant=t5_quant,
+            t5_quant_dir=t5_quant_dir,
         )
         self.base_seed = base_seed
 

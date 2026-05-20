@@ -58,6 +58,8 @@ class FlashTalkPipeline:
         cpu_offload=False,
         keep_dit_on_gpu=False,
         num_persistent_param_in_dit=15_000_000_000,
+        t5_quant=None,
+        t5_quant_dir=None,
         num_timesteps=1000,
         use_timestep_transform=True,
     ):
@@ -83,6 +85,8 @@ class FlashTalkPipeline:
         self.keep_dit_on_gpu = keep_dit_on_gpu
         self.vram_management = False
         self.num_persistent_param_in_dit = num_persistent_param_in_dit
+        self.t5_quant = t5_quant
+        self.t5_quant_dir = t5_quant_dir or checkpoint_dir
 
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
@@ -90,9 +94,12 @@ class FlashTalkPipeline:
             device="cpu" if self.cpu_offload else self.device,
             checkpoint_path=os.path.join(checkpoint_dir, config.t5_checkpoint),
             tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
+            quant=self.t5_quant,
+            quant_dir=self.t5_quant_dir,
         )
         logger.info(
-            f"Loaded T5 encoder on {'cpu' if self.cpu_offload else self.device} from {checkpoint_dir}"
+            f"Loaded T5 encoder on {'cpu' if self.cpu_offload else self.device} from {checkpoint_dir} "
+            f"(quant={self.t5_quant or 'none'}, quant_dir={self.t5_quant_dir})"
         )
 
         self.vae_stride = config.vae_stride
