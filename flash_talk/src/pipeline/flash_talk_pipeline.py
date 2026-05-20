@@ -384,8 +384,13 @@ class FlashTalkPipeline:
         audio_feature = audio_feature.unsqueeze(0)
 
         # audio encoder
+        if self.cpu_offload:
+            self.audio_encoder.to(self.device)
         with torch.no_grad():
             embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
+        if self.cpu_offload:
+            self.audio_encoder.cpu()
+            torch.cuda.empty_cache()
 
         if len(embeddings) == 0:
             logger.error("Fail to extract audio embedding")
