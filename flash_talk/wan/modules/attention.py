@@ -1,6 +1,14 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import torch
 import warnings
+from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.nn.functional import scaled_dot_product_attention
+
+try:
+    from sageattention import sageattn
+    SAGE_ATTN_AVAILABLE = True
+except ModuleNotFoundError:
+    SAGE_ATTN_AVAILABLE = False
 
 try:
     import flash_attn_interface
@@ -56,6 +64,44 @@ def flash_attention(
 
     def half(x):
         return x if x.dtype in half_dtypes else x.to(dtype)
+
+    # Simple non-varlen path: use flash SDPA or sageattn.
+    if q_lens is None and k_lens is None:
+        half_dtypes = (torch.float16, torch.bfloat16)
+
+        def half(x):
+            return x if x.dtype in half_dtypes else x.to(dtype)
+
+        q = half(q)
+        k = half(k)
+        v = half(v)
+        q = q.to(v.dtype)
+        k = k.to(v.dtype)
+
+        if q.size(-1) <= 256 and k.size(1) < 512:
+            with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                x = scaled_dot_product_attention(
+                    q.permute(0, 2, 1, 3),
+                    k.permute(0, 2, 1, 3),
+                    v.permute(0, 2, 1, 3),
+                    attn_mask=None,
+                    is_causal=causal,
+                    dropout_p=dropout_p,
+                ).permute(0, 2, 1, 3)
+            return x.type(out_dtype)
+
+        if SAGE_ATTN_AVAILABLE:
+            return sageattn(q=q, k=k, v=v, tensor_layout="NHD", output_dtype=dtype).type(out_dtype)
+
+        x = scaled_dot_product_attention(
+            q.permute(0, 2, 1, 3),
+            k.permute(0, 2, 1, 3),
+            v.permute(0, 2, 1, 3),
+            attn_mask=None,
+            is_causal=causal,
+            dropout_p=dropout_p,
+        ).permute(0, 2, 1, 3)
+        return x.type(out_dtype)
 
     # preprocess query
     if q_lens is None:
@@ -149,35 +195,18 @@ def attention(
     dtype=torch.bfloat16,
     fa_version=None,
 ):
-    if FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE:
-        return flash_attention(
-            q=q,
-            k=k,
-            v=v,
-            q_lens=q_lens,
-            k_lens=k_lens,
-            dropout_p=dropout_p,
-            softmax_scale=softmax_scale,
-            q_scale=q_scale,
-            causal=causal,
-            window_size=window_size,
-            deterministic=deterministic,
-            dtype=dtype,
-            version=fa_version,
-        )
-    else:
-        if q_lens is not None or k_lens is not None:
-            warnings.warn(
-                'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
-            )
-        attn_mask = None
-
-        q = q.transpose(1, 2).to(dtype)
-        k = k.transpose(1, 2).to(dtype)
-        v = v.transpose(1, 2).to(dtype)
-
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, is_causal=causal, dropout_p=dropout_p)
-
-        out = out.transpose(1, 2).contiguous()
-        return out
+    return flash_attention(
+        q=q,
+        k=k,
+        v=v,
+        q_lens=q_lens,
+        k_lens=k_lens,
+        dropout_p=dropout_p,
+        softmax_scale=softmax_scale,
+        q_scale=q_scale,
+        causal=causal,
+        window_size=window_size,
+        deterministic=deterministic,
+        dtype=dtype,
+        version=fa_version,
+    )

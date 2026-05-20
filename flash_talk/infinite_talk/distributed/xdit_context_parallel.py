@@ -12,6 +12,7 @@ from xfuser.core.long_ctx_attention import xFuserLongContextAttention
 import xformers.ops
 
 from ..modules.multitalk_model import sinusoidal_embedding_1d
+from flash_talk.src.rope_kernel import apply_rotary_complex
 from ..utils.multitalk_utils import get_attn_map_with_target, split_token_counts_and_frame_ids, normalize_and_scale
 from ..modules.multitalk_attention import SingleStreamMutiAttention
 
@@ -45,8 +46,6 @@ def rope_apply(x, grid_sizes, freqs):
         seq_len = f * h * w
 
         # precompute multipliers
-        x_i = torch.view_as_complex(x[i, :s].to(torch.float64).reshape(
-            s, n, -1, 2)) # [L, N, C/2] # 极坐标
         freqs_i = torch.cat([
             freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
             freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
@@ -61,7 +60,7 @@ def rope_apply(x, grid_sizes, freqs):
         s_per_rank = s
         freqs_i_rank = freqs_i[(sp_rank * s_per_rank):((sp_rank + 1) *
                                                        s_per_rank), :, :]
-        x_i = torch.view_as_real(x_i * freqs_i_rank).flatten(2)
+        x_i = apply_rotary_complex(x[i, :s], freqs_i_rank)
         x_i = torch.cat([x_i, x[i, s:]])
 
         # append to collection

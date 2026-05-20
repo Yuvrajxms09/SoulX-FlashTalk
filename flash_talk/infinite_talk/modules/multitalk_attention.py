@@ -211,7 +211,14 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         q = rearrange(q, "B H M K -> B M H K")
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-        x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)
+        if xformers is not None:
+            x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)
+        else:
+            x = F.scaled_dot_product_attention(
+                q.transpose(1, 2),
+                encoder_k.transpose(1, 2),
+                encoder_v.transpose(1, 2),
+            ).transpose(1, 2)
         x = rearrange(x, "B M H K -> B H M K")
 
         # linear transform
