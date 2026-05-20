@@ -12,7 +12,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from .multitalk_attention import SingleStreamMutiAttention
 from ..utils.multitalk_utils import get_attn_map_with_target
 from flash_talk.src.rope_kernel import fast_rope_apply
-from flash_talk.wan.modules.attention import attention, flash_attention
+from flash_talk.wan.modules.attention import attention
 
 __all__ = ['WanModel']
 
@@ -139,13 +139,7 @@ class WanSelfAttention(nn.Module):
         q = rope_apply(q, grid_sizes, freqs)
         k = rope_apply(k, grid_sizes, freqs)
 
-        x = flash_attention(
-            q=q,
-            k=k,
-            v=v,
-            k_lens=seq_lens,
-            window_size=self.window_size
-        ).type_as(x)
+        x = attention(q=q, k=k, v=v).type_as(x)
 
         # output
         x = x.flatten(2)
@@ -188,7 +182,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         v_img = self.v_img(context_img).view(b, -1, n, d)
         img_x = attention(q, k_img, v_img)
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v)
 
         # output
         x = x.flatten(2)

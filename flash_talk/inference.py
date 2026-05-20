@@ -392,7 +392,7 @@ class NotebookFlashTalkPipeline:
                     torch.cuda.synchronize()
                     end_time = time.time()
                     logger.info(f"Notebook chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
-                    writer.write(video.detach().cpu().numpy())
+                    writer.write(video.to(torch.uint8).cpu().numpy())
                     chunk_count += 1
 
             elif audio_encode_mode == "stream":
@@ -424,7 +424,7 @@ class NotebookFlashTalkPipeline:
                     torch.cuda.synchronize()
                     end_time = time.time()
                     logger.info(f"Notebook chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
-                    writer.write(video.detach().cpu().numpy())
+                    writer.write(video.to(torch.uint8).cpu().numpy())
                     chunk_count += 1
             else:
                 raise ValueError("audio_encode_mode must be 'once' or 'stream'")
