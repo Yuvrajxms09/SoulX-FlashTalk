@@ -315,6 +315,7 @@ class FlashTalkPipeline:
 
         if self.cpu_offload:
             self.vae.model.to(self.device)
+            self.vae.scale = [tensor.to(self.device) if isinstance(tensor, torch.Tensor) else tensor for tensor in self.vae.scale]
         y = self.vae.encode(padding_frames_pixels_values)
         common_y = y.unsqueeze(0).to(self.param_dtype)
 
@@ -452,6 +453,7 @@ class FlashTalkPipeline:
                 self.model.cpu()
                 torch.cuda.empty_cache()
                 self.vae.model.to(self.device)
+                self.vae.scale = [tensor.to(self.device) if isinstance(tensor, torch.Tensor) else tensor for tensor in self.vae.scale]
                 logger.info("DiT offloaded back to CPU; VAE moved to GPU for decode.")
 
             torch.cuda.synchronize()
