@@ -4,7 +4,7 @@ import os
 
 from loguru import logger
 
-from flash_talk.inference import FlashTalkInferencePipeline, infer_params
+from flash_talk.inference import FlashTalkPipeline, infer_params
 
 
 def _validate_args(args):
@@ -91,7 +91,7 @@ def generate(args):
             "cpu_offload is disabled; this differs from the fast-copy default and will keep T5/CLIP/VAE resident longer."
         )
 
-    notebook_pipeline = FlashTalkInferencePipeline(
+    notebook_pipeline = FlashTalkPipeline(
         ckpt_dir=args.ckpt_dir,
         wav2vec_dir=args.wav2vec_dir,
         world_size=world_size,

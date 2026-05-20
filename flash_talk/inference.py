@@ -14,7 +14,7 @@ import torch
 from loguru import logger
 from osc_data.video import Video
 
-from flash_talk.src.pipeline.flash_talk_pipeline import FlashTalkPipeline
+from flash_talk.src.pipeline.flash_talk_pipeline import FlashTalkPipeline as LegacyFlashTalkPipeline
 from flash_talk.src.distributed.usp_device import get_device, get_parallel_degree
 
 from flash_talk.infinite_talk.configs import multitalk_14B
@@ -43,7 +43,7 @@ def get_pipeline(
     device = get_device(ulysses_degree, ring_degree)
     logger.info(f"ulysses_degree: {ulysses_degree}, ring_degree: {ring_degree}, device: {device}")
 
-    pipeline = FlashTalkPipeline(
+    pipeline = LegacyFlashTalkPipeline(
         config=cfg,
         checkpoint_dir=ckpt_dir,
         wav2vec_dir=wav2vec_dir,
@@ -440,6 +440,9 @@ class FlashTalkInferencePipeline:
         logger.info(f"Notebook generation complete: {temp_path}")
         return artifact
 
+
+# Fast-copy compatible public alias.
+FlashTalkPipeline = FlashTalkInferencePipeline
 
 # Backward-compatible aliases for older notebook cells.
 FlashTalkNotebookPipeline = FlashTalkInferencePipeline
