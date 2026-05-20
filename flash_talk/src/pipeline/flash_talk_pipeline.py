@@ -459,12 +459,14 @@ class FlashTalkPipeline:
 
                 latent[:, :self.latent_motion_frames.shape[1]] = self.latent_motion_frames
 
-            if self.cpu_offload:
+            if self.cpu_offload and not self.keep_dit_on_gpu:
                 self.model.cpu()
                 torch.cuda.empty_cache()
                 self.vae.model.to(self.device)
                 self.vae.scale = [tensor.to(self.device) if isinstance(tensor, torch.Tensor) else tensor for tensor in self.vae.scale]
                 logger.info("DiT offloaded back to CPU; VAE moved to GPU for decode.")
+            elif self.keep_dit_on_gpu and self.rank == 0:
+                logger.info("DiT kept resident on GPU; only VAE moved for decode.")
 
             torch.cuda.synchronize()
             start_decode_time = time.time()
