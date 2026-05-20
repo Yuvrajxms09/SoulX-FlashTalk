@@ -52,6 +52,16 @@ def _parse_args():
         default="A person is talking. Only the foreground characters are moving, the background remains static.",
         help="The prompt to generate the video.")
     parser.add_argument(
+        "--height",
+        type=int,
+        default=infer_params["height"],
+        help="Output video height.")
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=infer_params["width"],
+        help="Output video width.")
+    parser.add_argument(
         "--cond_image",
         type=str,
         default="examples/man.png",
@@ -77,19 +87,25 @@ def _parse_args():
 
     return args
 
-def save_video(frames_list, video_path, audio_path, fps):
-    temp_video_path = video_path.replace('res_', '')
-    with imageio.get_writer(temp_video_path, format='mp4', mode='I',
-                            fps=fps , codec='h264', ffmpeg_params=['-bf', '0']) as writer:
-        for frames in frames_list:
-            frames = frames.numpy().astype(np.uint8)
-            for i in range(frames.shape[0]):
-                frame = frames[i, :, :, :]
-                writer.append_data(frame)
-    
-    
-    # Use aac audio codec for better compatibility instead of copy
-    cmd = ['ffmpeg', '-i', temp_video_path, '-i', audio_path, '-c:v', 'copy', '-c:a', 'aac', '-shortest', video_path, '-y']
+def append_frames(writer, frames):
+    frames = frames.numpy().astype(np.uint8)
+    for i in range(frames.shape[0]):
+        writer.append_data(frames[i, :, :, :])
+
+
+def merge_video_audio(temp_video_path, video_path, audio_path):
+    cmd = [
+        'ffmpeg',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-i', temp_video_path,
+        '-i', audio_path,
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
+        video_path,
+        '-y',
+    ]
     subprocess.run(cmd, check=True)
     os.remove(temp_video_path)
 
@@ -104,18 +120,42 @@ def generate(args):
 
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
+    target_size = (args.height, args.width)
 
     pipeline = get_pipeline(world_size=world_size, ckpt_dir=args.ckpt_dir, wav2vec_dir=args.wav2vec_dir, cpu_offload=args.cpu_offload)
-    get_base_data(pipeline, input_prompt=args.input_prompt, cond_image=args.cond_image, base_seed=args.base_seed)
-
-    generated_list = []
+    get_base_data(pipeline, input_prompt=args.input_prompt, cond_image=args.cond_image, base_seed=args.base_seed, target_size=target_size)
     human_speech_array_all, _ = librosa.load(args.audio_path, sr=infer_params['sample_rate'], mono=True)
-
 
     if rank == 0:
         logger.info("Data preparation done. Start to generate video...")
+        if args.save_file is None:
+            output_dir = 'sample_results'
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            timestamp = datetime.now().strftime("%Y%m%d-%H:%M:%S-%f")[:-3]
+            filename = f"res_{timestamp}.mp4"
+            filepath = os.path.join(output_dir, filename)
+            args.save_file = filepath
+        temp_video_path = args.save_file + '.temp.mp4'
+        video_writer = imageio.get_writer(
+            temp_video_path,
+            format='mp4',
+            mode='I',
+            fps=tgt_fps,
+            codec='h264',
+            ffmpeg_params=['-bf', '0'],
+        )
+    else:
+        temp_video_path = None
+        video_writer = None
 
     if args.audio_encode_mode == 'once':
+        # pad audio with silence to avoid truncating the last chunk
+        remainder = (len(human_speech_array_all) - frame_num * sample_rate // tgt_fps) % (slice_len * sample_rate // tgt_fps)
+        if remainder > 0:
+            pad_length = slice_len * sample_rate // tgt_fps - remainder
+            human_speech_array_all = np.concatenate([human_speech_array_all, np.zeros(pad_length, dtype=human_speech_array_all.dtype)])
+
         # encode audio together
         audio_embedding_all = get_audio_embedding(pipeline, human_speech_array_all)
         audio_embedding_chunks_list = [audio_embedding_all[:, i * slice_len: i * slice_len + frame_num].contiguous() for i in range((audio_embedding_all.shape[1]-frame_num) // slice_len)]
@@ -126,12 +166,14 @@ def generate(args):
             # inference
             video = run_pipeline(pipeline, audio_embedding_chunk)
 
+            if chunk_idx != 0:
+                video = video[motion_frames_num:]
+
             torch.cuda.synchronize()
             end_time = time.time()
             if rank == 0:
                 logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
-
-            generated_list.append(video.cpu())
+                append_frames(video_writer, video.cpu())
 
     elif args.audio_encode_mode == 'stream':
         cached_audio_length_sum = sample_rate * cached_audio_duration
@@ -141,7 +183,12 @@ def generate(args):
         audio_dq = deque([0.0] * cached_audio_length_sum, maxlen=cached_audio_length_sum)
 
         human_speech_array_slice_len = slice_len * sample_rate // tgt_fps
-        human_speech_array_slices = human_speech_array_all[:(len(human_speech_array_all)//(human_speech_array_slice_len))*human_speech_array_slice_len].reshape(-1, human_speech_array_slice_len)
+        remainder = len(human_speech_array_all) % human_speech_array_slice_len
+        if remainder > 0:
+            pad_length = human_speech_array_slice_len - remainder
+            human_speech_array_all = np.concatenate([human_speech_array_all, np.zeros(pad_length, dtype=human_speech_array_all.dtype)])
+
+        human_speech_array_slices = human_speech_array_all.reshape(-1, human_speech_array_slice_len)
 
         for chunk_idx, human_speech_array in enumerate(human_speech_array_slices):
             # streaming encode audio chunks
@@ -154,27 +201,20 @@ def generate(args):
 
             # inference
             video = run_pipeline(pipeline, audio_embedding)
+            video = video[motion_frames_num:]
 
             torch.cuda.synchronize()
             end_time = time.time()
             if rank == 0:
                 logger.info(f"Generate video chunk-{chunk_idx} done, cost time: {(end_time - start_time):.2f}s")
+                append_frames(video_writer, video.cpu())
 
-            generated_list.append(video.cpu())
-
+    if video_writer is not None:
+        video_writer.close()
 
     if rank == 0:
-        if args.save_file is None:
-            output_dir = 'sample_results'
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            timestamp = datetime.now().strftime("%Y%m%d-%H:%M:%S-%f")[:-3]
-            filename = f"res_{timestamp}.mp4"
-            filepath = os.path.join(output_dir, filename)
-            args.save_file = filepath
-
-        save_video(generated_list, args.save_file, args.audio_path, fps=tgt_fps)
-        logger.info(f"Saving generated video to {args.save_file}.mp4")  
+        merge_video_audio(temp_video_path, args.save_file, args.audio_path)
+        logger.info(f"Saving generated video to {args.save_file}.mp4")
         logger.info("Finished.")
 
     if world_size > 1:

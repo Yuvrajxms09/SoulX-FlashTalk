@@ -33,7 +33,7 @@ def get_pipeline(world_size, ckpt_dir, wav2vec_dir, cpu_offload=False):
 
     return pipeline
 
-def get_base_data(pipeline, input_prompt, cond_image, base_seed):
+def get_base_data(pipeline, input_prompt, cond_image, base_seed, target_size=target_size):
     pipeline.prepare_params(
         input_prompt=input_prompt, 
         cond_image=cond_image,
@@ -67,4 +67,3 @@ def run_pipeline(pipeline, audio_embedding):
     sample = pipeline.generate(audio_embedding)
     sample_frames = (((sample+1)/2).permute(1,2,3,0).clip(0,1) * 255).contiguous()
     return sample_frames
-
