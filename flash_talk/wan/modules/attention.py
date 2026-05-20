@@ -26,7 +26,12 @@ except ModuleNotFoundError:
 __all__ = ["flash_attention", "attention"]
 
 
-def _fast_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+def _fast_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
     half_dtypes = (torch.float16, torch.bfloat16)
     assert dtype in half_dtypes
     assert q.device.type == "cuda" and q.size(-1) <= 256
@@ -42,12 +47,57 @@ def _fast_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dtype: to
 
     q = q.to(v.dtype)
     k = k.to(v.dtype)
-    if l_k < 512:
+    if l_k < 512 or not SAGE_ATTN_AVAILABLE:
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             return scaled_dot_product_attention(
                 q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)
             ).permute(0, 2, 1, 3)
     return sageattn(q=q, k=k, v=v, tensor_layout="NHD", output_dtype=dtype)
+
+
+def _varlen_attention_fallback(
+    q,
+    k,
+    v,
+    q_lens,
+    k_lens,
+    dropout_p=0.0,
+    causal=False,
+    dtype=torch.bfloat16,
+):
+    half_dtypes = (torch.float16, torch.bfloat16)
+    assert dtype in half_dtypes
+    assert q.device.type == "cuda" and q.size(-1) <= 256
+
+    def half(x):
+        return x if x.dtype in half_dtypes else x.to(dtype)
+
+    b, lq, lk, out_dtype = q.size(0), q.size(1), k.size(1), q.dtype
+
+    if q_lens is None:
+        q_lens = torch.tensor([lq] * b, dtype=torch.int32, device=q.device)
+    if k_lens is None:
+        k_lens = torch.tensor([lk] * b, dtype=torch.int32, device=k.device)
+
+    q = half(q)
+    k = half(k)
+    v = half(v)
+
+    out = torch.zeros((b, lq, q.size(2), q.size(3)), device=q.device, dtype=v.dtype)
+    for i in range(b):
+        q_i = q[i, : int(q_lens[i])]
+        k_i = k[i, : int(k_lens[i])]
+        v_i = v[i, : int(k_lens[i])]
+        out_i = scaled_dot_product_attention(
+            q_i.permute(1, 0, 2).unsqueeze(0),
+            k_i.permute(1, 0, 2).unsqueeze(0),
+            v_i.permute(1, 0, 2).unsqueeze(0),
+            attn_mask=None,
+            is_causal=causal,
+            dropout_p=dropout_p,
+        ).squeeze(0).permute(1, 0, 2)
+        out[i, : out_i.size(0)] = out_i
+    return out.type(out_dtype)
 
 
 def flash_attention(
@@ -103,6 +153,7 @@ def flash_attention(
     assert q.device.type == "cuda" and q.size(-1) <= 256
 
     b, lq, lk, out_dtype = q.size(0), q.size(1), k.size(1), q.dtype
+    q_full, k_full, v_full = q, k, v
 
     def half(x):
         return x if x.dtype in half_dtypes else x.to(dtype)
@@ -153,8 +204,7 @@ def flash_attention(
             x = x.unflatten(0, (b, lq))
         except Exception:
             x = x[0].unflatten(0, (b, lq))
-    else:
-        assert FLASH_ATTN_2_AVAILABLE
+    elif FLASH_ATTN_2_AVAILABLE:
         x = flash_attn.flash_attn_varlen_func(
             q=q,
             k=k,
@@ -173,6 +223,17 @@ def flash_attention(
             window_size=window_size,
             deterministic=deterministic,
         ).unflatten(0, (b, lq))
+    else:
+        return _varlen_attention_fallback(
+            q=q_full,
+            k=k_full,
+            v=v_full,
+            q_lens=q_lens,
+            k_lens=k_lens,
+            dropout_p=dropout_p,
+            causal=causal,
+            dtype=dtype,
+        )
 
     return x.type(out_dtype)
 

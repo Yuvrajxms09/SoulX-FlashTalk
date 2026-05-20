@@ -1,7 +1,6 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange
 from xfuser.core.distributed import (
     get_sequence_parallel_rank,
@@ -13,6 +12,7 @@ except ImportError:
     xformers = None
 
 from flash_talk.src.rope_kernel import RotaryPositionalEmbedding1D
+from flash_talk.wan.modules.attention import attention as optimized_attention
 from ..utils.multitalk_utils import normalize_and_scale, split_token_counts_and_frame_ids
 
 class SingleStreamAttention(nn.Module):
@@ -91,14 +91,12 @@ class SingleStreamAttention(nn.Module):
         else:
             attn_bias = None
 
-        if xformers is not None:
-            x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=attn_bias, op=None,)
+        if enable_sp and xformers is not None:
+            x = xformers.ops.memory_efficient_attention(
+                q, encoder_k, encoder_v, attn_bias=attn_bias, op=None
+            )
         else:
-            x = F.scaled_dot_product_attention(
-                q.transpose(1, 2),
-                encoder_k.transpose(1, 2),
-                encoder_v.transpose(1, 2),
-            ).transpose(1, 2)
+            x = optimized_attention(q, encoder_k, encoder_v)
         x = rearrange(x, "B M H K -> B H M K") 
 
         # linear transform
@@ -212,14 +210,7 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         q = rearrange(q, "B H M K -> B M H K")
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-        if xformers is not None:
-            x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)
-        else:
-            x = F.scaled_dot_product_attention(
-                q.transpose(1, 2),
-                encoder_k.transpose(1, 2),
-                encoder_v.transpose(1, 2),
-            ).transpose(1, 2)
+        x = optimized_attention(q, encoder_k, encoder_v)
         x = rearrange(x, "B M H K -> B H M K")
 
         # linear transform
