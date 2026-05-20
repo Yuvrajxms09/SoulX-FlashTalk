@@ -374,9 +374,11 @@ class NotebookFlashTalkPipeline:
                     pad_length = 0
 
                 audio_embedding_all = get_audio_embedding(self.pipeline, human_speech_array_all)
+                audio_embedding_len = audio_embedding_all.shape[1]
+                chunk_count = max(1, (audio_embedding_len - frame_num + slice_len) // slice_len)
                 audio_embedding_chunks_list = [
                     audio_embedding_all[:, i * slice_len : i * slice_len + frame_num].contiguous()
-                    for i in range((audio_embedding_all.shape[1] - frame_num) // slice_len)
+                    for i in range(chunk_count)
                 ]
                 logger.info(
                     f"Notebook once-mode: audio_len={len(human_speech_array_all)}, pad_len={pad_length}, chunk_count={len(audio_embedding_chunks_list)}"
